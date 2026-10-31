@@ -2563,3 +2563,50 @@ async def test_api_client_caches_a_browse_for_a_week_and_a_lookup_for_a_month() 
         f"get_browse_data.release-group.artist{RADIOHEAD_MBID}.offset0": 86400 * 7,
         f"get_data.artist/{RADIOHEAD_MBID}": 86400 * 30,
     }
+
+
+# ---------------------------------------------------------------------------
+# release group series
+# ---------------------------------------------------------------------------
+
+
+def _series_relation(
+    name: str, number: str | None, ordering_key: int | None, series_type: str
+) -> dict[str, Any]:
+    """Return a raw release group "part of" relation to a series."""
+    return {
+        "type": "part of",
+        "target-type": "series",
+        "direction": "forward",
+        "ordering-key": ordering_key,
+        "attribute-values": {"number": number} if number is not None else {},
+        "series": {"id": f"series-{name}", "name": name, "type": series_type},
+    }
+
+
+async def test_get_releasegroup_series() -> None:
+    """Only release group series count, numbered by their number attribute."""
+    provider, get_data = _provider(
+        {
+            "id": "rg-1",
+            "title": "Now That's What I Call Music! 3",
+            "relations": [
+                _series_relation("Now That's What I Call Music!", "3", 3, "Release group series"),
+                _series_relation("Bravo Hits", "Vol. 2", 7, "Release group series"),
+                _series_relation("Some Tour", "1", 1, "Tour"),
+                {"type": "discogs", "url": {"resource": "https://www.discogs.com/master/1"}},
+            ],
+        }
+    )
+    series = await provider.get_releasegroup_series("rg-1")
+    assert [(x.title, x.sequence) for x in series] == [
+        ("Now That's What I Call Music!", 3.0),
+        ("Bravo Hits", 7),
+    ]
+    get_data.assert_awaited_once_with("release-group/rg-1?inc=series-rels")
+
+
+async def test_get_releasegroup_series_none() -> None:
+    """A release group MusicBrainz does not answer for is part of no series."""
+    provider, _ = _provider(None)
+    assert await provider.get_releasegroup_series("rg-1") == []

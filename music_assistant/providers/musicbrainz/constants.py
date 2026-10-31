@@ -14,6 +14,9 @@ LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
 # Measured against hand-dated songs: a smaller gap corrects as often as it misleads.
 MIN_FIRST_RELEASE_CORRECTION_YEARS = 5
 
+# the series type that groups release groups (e.g. a compilation series)
+RELEASE_GROUP_SERIES_TYPE = "Release group series"
+
 SUPPORTED_FEATURES: set[ProviderFeature] = {
     ProviderFeature.ARTIST_METADATA,
     ProviderFeature.ALBUM_METADATA,

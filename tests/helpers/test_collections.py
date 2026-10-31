@@ -7,12 +7,13 @@ from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import (
     Audiobook,
     MediaCollection,
+    MediaItemCollection,
     Podcast,
     ProviderMapping,
     UniqueList,
 )
 
-from music_assistant.helpers.collections import has_available_item
+from music_assistant.helpers.collections import has_available_item, merge_item_collections
 
 pytestmark = pytest.mark.asyncio
 
@@ -78,3 +79,29 @@ async def test_has_available_item_unavailable_collection() -> None:
     )
     assert not has_available_item([collection])
     assert not has_available_item([collection, _audiobook("Book 3", "offline")])
+
+
+async def test_merge_item_collections_keeps_one_entry_per_title() -> None:
+    """A collection given again replaces the stored one, the others are kept."""
+    merged = merge_item_collections(
+        [MediaItemCollection(title="Now", sequence=3), MediaItemCollection(title="Hits")],
+        [MediaItemCollection(title="Now", sequence=4)],
+    )
+    assert merged == [
+        MediaItemCollection(title="Now", sequence=4),
+        MediaItemCollection(title="Hits"),
+    ]
+
+
+async def test_merge_item_collections_keeps_known_sequence() -> None:
+    """A collection given again without a sequence keeps the sequence it had."""
+    merged = merge_item_collections(
+        [MediaItemCollection(title="Now", sequence=3)], [MediaItemCollection(title="Now")]
+    )
+    assert merged == [MediaItemCollection(title="Now", sequence=3)]
+
+
+async def test_merge_item_collections_none() -> None:
+    """No collections on either side stays unknown."""
+    assert merge_item_collections(None, None) is None
+    assert merge_item_collections(None, []) == []

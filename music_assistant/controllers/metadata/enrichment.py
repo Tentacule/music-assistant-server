@@ -48,6 +48,7 @@ from music_assistant.controllers.music.helpers import (
     merge_metadata,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.helpers.collections import merge_item_collections
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.external_ids import is_valid_barcode, is_valid_isrc
 from music_assistant.helpers.provider_access import visible_music_sources
@@ -744,6 +745,13 @@ class MetadataEnrichmentMixin:
                 await self.mass.music.albums.link_album_tracks(
                     album, db_tracks, release, link_providers=link_providers
                 )
+            if releasegroup_id := album.get_external_id(ExternalID.MB_RELEASEGROUP):
+                # the series (e.g. a compilation series) the album's release group is part of
+                with suppress(InvalidDataError):
+                    if series := await musicbrainz.get_releasegroup_series(releasegroup_id):
+                        album.metadata.collections = merge_item_collections(
+                            album.metadata.collections, series
+                        )
         except _TEMPORARY_ERRORS as err:
             self.logger.debug(
                 "Album %s could not be looked up on MusicBrainz right now: %s", album.name, err
