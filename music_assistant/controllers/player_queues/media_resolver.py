@@ -1175,11 +1175,27 @@ class MediaResolver:
             collection_item_media_type = get_collection_item_media_type_from_item_id(
                 media_item.item_id
             )
-            if collection_item_media_type != MediaType.AUDIOBOOK:
-                self.logger.error("Collections are only available for audiobooks.")
-                return []
             if TYPE_CHECKING:
                 assert isinstance(media_item, MediaCollection)
+            if collection_item_media_type == MediaType.ALBUM:
+                # a series of albums plays its albums in the order of the series
+                series_tracks: list[ResolvedItem] = []
+                for album in media_item.items:
+                    if TYPE_CHECKING:
+                        assert isinstance(album, Album)
+                    series_tracks += await self._resolve_album(
+                        album,
+                        start_item=None,
+                        userid=userid,
+                        queue_id=queue_id,
+                        sort_field=None,
+                        sort_direction=None,
+                        keep_preceding_items=False,
+                    )
+                return series_tracks
+            if collection_item_media_type != MediaType.AUDIOBOOK:
+                self.logger.error("Collections are only available for audiobooks and albums.")
+                return []
             book: Audiobook | None = None
             for item in media_item.items:
                 if TYPE_CHECKING:

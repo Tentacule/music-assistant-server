@@ -71,6 +71,17 @@ class MusicBrainzUrl(DataClassDictMixin):
 
 
 @dataclass
+class MusicBrainzSeries(DataClassDictMixin):
+    """Model for a (basic) Series object embedded in a MusicBrainz relation."""
+
+    id: str
+    name: str
+
+    # optional fields
+    type: str | None = None
+
+
+@dataclass
 class MusicBrainzRelation(DataClassDictMixin):
     """Model for a Relation object from MusicBrainz."""
 
@@ -79,6 +90,28 @@ class MusicBrainzRelation(DataClassDictMixin):
     # optional - only populated on url-rels (work-rels and friends have other targets)
     url: MusicBrainzUrl | None = None
     ended: bool = False
+    # optional - only populated on series-rels
+    series: MusicBrainzSeries | None = None
+    ordering_key: int | None = None
+    attribute_values: dict[str, str] | None = None
+
+
+def series_sequence(relation: MusicBrainzRelation) -> float | str | None:
+    """
+    Return the position of a relation's source within the series it targets.
+
+    :param relation: A series relation from MusicBrainz.
+    :return: The number given to the source in the series (as a float when numeric),
+        else the series' own ordering key.
+    """
+    number = (relation.attribute_values or {}).get("number")
+    if number:
+        try:
+            return float(number)
+        except ValueError:
+            if relation.ordering_key is None:
+                return number
+    return relation.ordering_key
 
 
 @dataclass
@@ -130,6 +163,7 @@ class MusicBrainzReleaseGroup(DataClassDictMixin):
     barcode: str | None = None
     first_release_date: str | None = None
     genres: list[MusicBrainzTag] | None = None
+    relations: list[MusicBrainzRelation] | None = None
 
     @classmethod
     def from_raw(cls, data: Any) -> MusicBrainzReleaseGroup:

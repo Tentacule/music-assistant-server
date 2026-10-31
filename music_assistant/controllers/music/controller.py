@@ -2411,8 +2411,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Return controller for MediaType."""
         media_type = get_collection_item_media_type_from_item_id(item_id)
         controller = self.get_controller(media_type)
-        if not isinstance(controller, AudiobooksController):
-            # currently only supported for audiobooks
+        if not isinstance(controller, AudiobooksController | AlbumsController):
+            # currently only supported for audiobooks and albums
             raise NotImplementedError(
                 f"No media controller available for media type: {media_type.value}"
             )

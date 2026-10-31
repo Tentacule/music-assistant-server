@@ -3955,6 +3955,11 @@ class LocalFileSystemProvider(MusicProvider):
         if track_tags.year:
             album.year = track_tags.year
         album.album_type = track_tags.album_type
+        if series := track_tags.series:
+            # e.g. a compilation series, which groups the albums together in the library
+            album.metadata.collections = UniqueList(
+                [MediaItemCollection(title=series, sequence=track_tags.series_part)]
+            )
 
         # hunt for additional metadata and images in the folder structure
         if not album_dir:

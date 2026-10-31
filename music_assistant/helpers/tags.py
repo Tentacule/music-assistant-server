@@ -419,12 +419,12 @@ class AudioTags:
 
     @property
     def series(self) -> str | None:
-        """Return the series an audiobook belongs to."""
+        """Return the series an audiobook or album belongs to."""
         return self.tags.get("series")
 
     @property
     def series_part(self) -> float | str | None:
-        """Return the audiobook's position within its series."""
+        """Return the audiobook's or album's position within its series."""
         if not (tag := self.tags.get("seriespart")):
             return None
         with suppress(ValueError):
@@ -1018,7 +1018,7 @@ def _normalized_tag_values(
 
 def _store_series_tags(result: dict[str, Any], values_by_key: dict[str, list[str]]) -> None:
     """
-    Store the series an audiobook belongs to and its position within it.
+    Store the series an audiobook or album belongs to and its position within it.
 
     :param result: Dictionary to store parsed tags.
     :param values_by_key: Tag values keyed by normalized tag name.

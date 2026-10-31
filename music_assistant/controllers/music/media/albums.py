@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from itertools import groupby
 from time import time
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, cast, overload
 
 import aiohttp
 from music_assistant_models.auth import Scope
@@ -33,6 +33,7 @@ from music_assistant_models.media_items import (
     AlbumSummary,
     Artist,
     ItemMapping,
+    MediaCollection,
     ProviderMapping,
     Track,
     UniqueList,
@@ -48,6 +49,7 @@ from music_assistant.controllers.music.helpers import (
 )
 from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
 from music_assistant.controllers.music.listing_cache import Listing, cached_listing
+from music_assistant.helpers.collections import merge_item_collections
 from music_assistant.helpers.compare import (
     ALBUM_RETAIL_SUFFIX_KEYS,
     AlbumMatchEvidence,
@@ -204,6 +206,74 @@ class AlbumsController(MediaControllerBase[Album]):
         album.artists = album_artists
         return album
 
+    if TYPE_CHECKING:
+
+        @overload
+        async def library_items(
+            self,
+            favorite: bool | None = None,
+            search: str | None = None,
+            limit: int = 500,
+            offset: int = 0,
+            order_by: str | None = None,
+            provider: str | list[str] | None = None,
+            genre: int | list[int] | None = None,
+            played_only: bool = False,
+            album_types: list[AlbumType] | None = None,
+            *,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
+            summary: bool = True,
+            collapse_collections: Literal[False] = False,
+            reachable_via: list[str] | None = None,
+            random_seed: int | None = None,
+            **kwargs: Any,
+        ) -> list[Album]: ...
+
+        @overload
+        async def library_items(
+            self,
+            favorite: bool | None = None,
+            search: str | None = None,
+            limit: int = 500,
+            offset: int = 0,
+            order_by: str | None = None,
+            provider: str | list[str] | None = None,
+            genre: int | list[int] | None = None,
+            played_only: bool = False,
+            album_types: list[AlbumType] | None = None,
+            *,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
+            summary: bool = True,
+            collapse_collections: Literal[True],
+            reachable_via: list[str] | None = None,
+            random_seed: int | None = None,
+            **kwargs: Any,
+        ) -> list[Album] | list[Album | MediaCollection[Album]]: ...
+
+        @overload
+        async def library_items(
+            self,
+            favorite: bool | None = None,
+            search: str | None = None,
+            limit: int = 500,
+            offset: int = 0,
+            order_by: str | None = None,
+            provider: str | list[str] | None = None,
+            genre: int | list[int] | None = None,
+            played_only: bool = False,
+            album_types: list[AlbumType] | None = None,
+            *,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
+            summary: bool = True,
+            collapse_collections: bool,
+            reachable_via: list[str] | None = None,
+            random_seed: int | None = None,
+            **kwargs: Any,
+        ) -> list[Album] | list[Album | MediaCollection[Album]]: ...
+
     async def library_items(  # noqa: PLR0913
         self,
         favorite: bool | None = None,
@@ -219,10 +289,11 @@ class AlbumsController(MediaControllerBase[Album]):
         sort_field: SortField | None = None,
         sort_direction: SortDirection | None = None,
         summary: bool = True,
+        collapse_collections: bool = False,
         reachable_via: list[str] | None = None,
         random_seed: int | None = None,
         **kwargs: Any,
-    ) -> list[Album]:
+    ) -> list[Album] | list[Album | MediaCollection[Album]]:
         """
         Get in-database albums.
 
@@ -240,6 +311,8 @@ class AlbumsController(MediaControllerBase[Album]):
         :param sort_direction: Sort direction, the field's default when omitted.
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
+        :param collapse_collections: Return the albums of a series (collection) as one
+            MediaCollection instead of individually.
         :param reachable_via: Restrict results to items with a provider mapping reachable
             through one of these provider instance ids (OR semantics). See
             `MediaControllerBase.library_items` for the full semantics.
@@ -286,23 +359,29 @@ class AlbumsController(MediaControllerBase[Album]):
                         "artists", artist_str, "search_artist", extra_query_params
                     )
                 )
-        result = await self.get_library_items_by_query(
-            favorite=favorite,
-            search=search,
-            genre_ids=genre,
-            limit=limit,
-            offset=offset,
-            sort_field=field,
-            sort_direction=direction,
-            provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
-            extra_query_parts=extra_query_parts,
-            extra_query_params=extra_query_params,
-            extra_join_parts=extra_join_parts,
-            played_only=played_only,
-            in_library_only=True,
-            summary=summary,
-            reachable_via=reachable_via,
-            random_seed=random_seed,
+        result = cast(
+            "list[Album | MediaCollection[Album]]",
+            await self.get_library_items_by_query(
+                favorite=favorite,
+                search=search,
+                genre_ids=genre,
+                limit=limit,
+                offset=offset,
+                sort_field=field,
+                sort_direction=direction,
+                provider_filter=self._provider_filter_considering_reachability(
+                    provider, reachable_via
+                ),
+                extra_query_parts=extra_query_parts,
+                extra_query_params=extra_query_params,
+                extra_join_parts=extra_join_parts,
+                played_only=played_only,
+                in_library_only=True,
+                summary=summary,
+                collapse_collections=collapse_collections,
+                reachable_via=reachable_via,
+                random_seed=random_seed,
+            ),
         )
 
         # Calculate how many more items we need to reach the original limit
@@ -340,6 +419,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 extra_join_parts=extra_join_parts,
                 in_library_only=True,
                 summary=summary,
+                collapse_collections=collapse_collections,
                 reachable_via=reachable_via,
                 random_seed=random_seed,
             ):
@@ -849,12 +929,17 @@ class AlbumsController(MediaControllerBase[Album]):
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
+        stored_collections = cur_item.metadata.collections
         metadata = metadata_for_update(
             cur_item.metadata,
             update.metadata,
             overwrite,
             cur_item.provider_mappings,
             update.provider_mappings,
+        )
+        # the series of the tags and of MusicBrainz add up, but an album is only once in each
+        metadata.collections = merge_item_collections(
+            stored_collections, update.metadata.collections
         )
         if getattr(update, "album_type", AlbumType.UNKNOWN) != AlbumType.UNKNOWN:
             album_type = update.album_type
