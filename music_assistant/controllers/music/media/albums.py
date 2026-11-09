@@ -79,6 +79,7 @@ from music_assistant.providers.musicbrainz.provider import (
     release_matches_album,
 )
 
+from .album_groups import AlbumGroupsMixin
 from .album_tracks import AlbumListing, album_listing, album_track_backfills, mapped_album_listing
 from .base import EXTERNAL_ID_LOOKUP_ERRORS, MAX_EXTERNAL_ID_MATCH_LOOKUPS, MediaControllerBase
 
@@ -119,7 +120,7 @@ class _BaseTracksMemo:
     tracks: list[Track] | None = None
 
 
-class AlbumsController(MediaControllerBase[Album]):
+class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
     """Controller managing MediaItems of type Album."""
 
     db_table = DB_TABLE_ALBUMS
@@ -143,6 +144,7 @@ class AlbumsController(MediaControllerBase[Album]):
             self.versions_enrichment,
             required_scope=Scope.LIBRARY_READ,
         )
+        self._register_album_group_commands()
 
     @property
     def base_query(self) -> tuple[str, dict[str, Any]]:
