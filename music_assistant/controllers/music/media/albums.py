@@ -72,6 +72,7 @@ from music_assistant.models.music_provider import (
     MusicProvider,
     provider_fetch_log_level,
 )
+from music_assistant.providers.musicbrainz.models import AlbumVersionEnrichment
 from music_assistant.providers.musicbrainz.provider import (
     is_digital_release,
     relation_urls,
@@ -136,6 +137,11 @@ class AlbumsController(MediaControllerBase[Album]):
         )
         self.mass.register_api_command(
             f"music/{api_base}/album_versions", self.versions, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/versions_enrichment",
+            self.versions_enrichment,
+            required_scope=Scope.LIBRARY_READ,
         )
 
     @property
@@ -596,6 +602,37 @@ class AlbumsController(MediaControllerBase[Album]):
             offset=offset,
             random_seed=random_seed,
         )
+
+    async def versions_enrichment(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> list[AlbumVersionEnrichment]:
+        """Return MusicBrainz enrichment for all versions of an album the user has in their sources.
+
+        Fetches the album's provider versions, then for each version that has a MB_ALBUM MBID
+        retrieves the catalog number, label and per-disc track count from the MusicBrainz cache.
+
+        Returns [] when MusicBrainz is unavailable or on any network error — the caller
+        degrades gracefully to showing year and type only.
+        """
+        musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
+        if musicbrainz is None:
+            return []
+        with contextlib.suppress(*_MUSICBRAINZ_LOOKUP_ERRORS):
+            versions = await self.versions(
+                item_id, provider_instance_id_or_domain, limit=0
+            )
+            enrichments: list[AlbumVersionEnrichment] = []
+            for version in versions:
+                mb_id = version.mbid
+                if not mb_id:
+                    continue
+                enrichment = await musicbrainz.get_version_enrichment(mb_id)
+                if enrichment:
+                    enrichments.append(enrichment)
+            return enrichments
+        return []
 
     async def resolve_musicbrainz_release_group(
         self, release_group_id: str, allow_update_metadata: bool = True

@@ -57,6 +57,7 @@ from .constants import (
     URL_RELATION_TYPE_MAPPING,
 )
 from .models import (
+    AlbumVersionEnrichment,
     MusicBrainzArtist,
     MusicBrainzArtistCredit,
     MusicBrainzBarcodeRelease,
@@ -511,6 +512,33 @@ class MusicbrainzProvider(MetadataProvider):
                 raise InvalidDataError from err
         msg = "Invalid MusicBrainz Album ID provided"
         raise InvalidDataError(msg)
+
+    async def get_version_enrichment(self, mb_release_id: str) -> AlbumVersionEnrichment | None:
+        """Return catalog number, label and per-disc track counts for a MB release.
+
+        Uses the already-cached get_release_details call (30-day cache), so there is no
+        extra network cost after the first fetch.  Returns None on network error or unknown MBID.
+        """
+        with suppress(InvalidDataError):
+            release = await self.get_release_details(mb_release_id)
+            catalog_numbers = [
+                info.catalog_number
+                for info in (release.label_info or [])
+                if info.catalog_number
+            ]
+            label_names = [
+                info.label.name
+                for info in (release.label_info or [])
+                if info.label
+            ]
+            track_count_per_disc = [m.track_count for m in release.media if m.track_count]
+            return AlbumVersionEnrichment(
+                mb_release_id=mb_release_id,
+                catalog_numbers=catalog_numbers,
+                label_names=label_names,
+                track_count_per_disc=track_count_per_disc,
+            )
+        return None
 
     async def get_releases_by_barcode(self, barcode: str) -> list[MusicBrainzBarcodeRelease]:
         """

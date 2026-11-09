@@ -281,3 +281,13 @@ class MusicBrainzBarcodeRelease(DataClassDictMixin):
         if TYPE_CHECKING:
             alt_data = cast("dict[str, Any]", alt_data)
         return MusicBrainzBarcodeRelease.from_dict(alt_data)
+
+
+@dataclass
+class AlbumVersionEnrichment:
+    """MusicBrainz enrichment for one album version the user has in their sources."""
+
+    mb_release_id: str
+    catalog_numbers: list[str]
+    label_names: list[str]
+    track_count_per_disc: list[int]
