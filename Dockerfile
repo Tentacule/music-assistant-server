@@ -12,6 +12,7 @@
 # expensive requirements_all.txt download is never repeated.
 
 ARG BASE_IMAGE_VERSION=latest
+ARG DEPS_IMAGE=tentacule/music-assistant:deps
 FROM --platform=$BUILDPLATFORM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION AS cliairplay-download
 
 # Bump the version and checksum-manifest hash together.
@@ -49,7 +50,6 @@ COPY --from=cliairplay-download /cliairplay /cliairplay
 # When DEPS_IMAGE is the official MA image all system deps and cliairplay are
 # already there; when it is our local deps image only the Python deps are.
 ##############################################################################
-ARG DEPS_IMAGE=tentacule/music-assistant:deps
 FROM $DEPS_IMAGE AS builder
 ARG TARGETARCH
 
