@@ -537,6 +537,7 @@ class MusicbrainzProvider(MetadataProvider):
                 catalog_numbers=catalog_numbers,
                 label_names=label_names,
                 track_count_per_disc=track_count_per_disc,
+                release_group_id=release.release_group.id if release.release_group else None,
             )
         return None
 

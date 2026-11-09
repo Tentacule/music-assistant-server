@@ -631,7 +631,27 @@ class AlbumsController(MediaControllerBase[Album]):
                 enrichment = await musicbrainz.get_version_enrichment(mb_id)
                 if enrichment:
                     enrichments.append(enrichment)
-            return enrichments
+
+            # Filter to a single release group.
+            # Prefer the group of the queried album itself (by its own mbid); fall back to
+            # the group that appears most often (albums outnumber singles in practice).
+            if len({e.release_group_id for e in enrichments if e.release_group_id}) <= 1:
+                return enrichments
+            album = await self.get(item_id, provider_instance_id_or_domain)
+            own_mb_id = album.mbid if album else None
+            if own_mb_id:
+                own_enrichment = next(
+                    (e for e in enrichments if e.mb_release_id == own_mb_id), None
+                )
+                target_group = own_enrichment.release_group_id if own_enrichment else None
+            else:
+                target_group = None
+            if not target_group:
+                from collections import Counter
+                target_group = Counter(
+                    e.release_group_id for e in enrichments if e.release_group_id
+                ).most_common(1)[0][0]
+            return [e for e in enrichments if e.release_group_id == target_group]
         return []
 
     async def resolve_musicbrainz_release_group(

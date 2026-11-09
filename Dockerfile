@@ -35,19 +35,14 @@ COPY --from=cliairplay-download /cliairplay /cliairplay
 
 # Builder image. It builds the venv that will be copied to the final image
 #
+# Cache layout (fastest incremental rebuilds):
+#   Layer 1 — apt packages + uv: invalidated only by base image changes
+#   Layer 2 — requirements_all.txt install: invalidated only when that file changes
+#   Layer 3 — PyAV: same frequency as layer 2
+#   Layer 4 — dist/ wheels (MA + frontend): invalidated on every dev build
+#
 FROM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION AS builder
 ARG TARGETARCH
-
-ADD dist dist
-COPY requirements_all.txt .
-
-# miniaudio has no Linux arm64 wheels, so pyatv requires a source build there.
-# The compiler stays in this disposable builder stage and is not copied to the final image.
-# RUN if [ "$TARGETARCH" = "arm64" ]; then \
-#         apt-get update && \
-#         apt-get install -y --no-install-recommends gcc g++ && \
-#         rm -rf /var/lib/apt/lists/*; \
-#     fi
 
 # TODO: Remove git and the compilers once aiolibdatachannel and yappi are installed from PyPI
 RUN apt-get update && \
@@ -62,11 +57,12 @@ ENV VIRTUAL_ENV=/app/venv
 RUN uv venv $VIRTUAL_ENV
 
 # pre-install ALL requirements into the venv
-# comes at a cost of a slightly larger image size but is faster to start
-# because we do not have to install dependencies at runtime
+# IMPORTANT: copy requirements_all.txt BEFORE dist/ so that this expensive layer
+# is only invalidated when requirements change, not on every wheel rebuild.
 # --index-strategy: allow PyPI packages when also using the PyTorch extra index
 # https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
 # Keep urllib3-future from hijacking the urllib3 namespace (see pyproject.toml).
+COPY requirements_all.txt .
 ENV URLLIB3_NO_OVERRIDE=1
 RUN uv pip install \
     --index-strategy unsafe-best-match \
@@ -84,11 +80,19 @@ RUN REQUIRED_VERSION=$($VIRTUAL_ENV/bin/python -c "import importlib.metadata; pr
     fi && \
     uv pip install --force-reinstall --no-deps /usr/local/share/pyav-wheels/av*.whl
 
+# Add local wheels — this layer changes on every dev build (MA + frontend wheel)
+ADD dist dist
+
 # Install Music Assistant from prebuilt wheel
 ARG MASS_VERSION
 RUN uv pip install \
     --no-cache \
     "music-assistant@dist/music_assistant-${MASS_VERSION}-py3-none-any.whl"
+
+# Override the frontend with a local build when one is present in dist/.
+# This lets a dev build replace the PyPI frontend without changing pyproject.toml.
+RUN ls dist/music_assistant_frontend-*.whl 1>/dev/null 2>&1 && \
+    uv pip install --no-deps --force-reinstall dist/music_assistant_frontend-*.whl || true
 
 COPY --from=cliairplay /cliairplay /tmp/cliairplay
 RUN SITE_PACKAGES="$("$VIRTUAL_ENV/bin/python" -c \

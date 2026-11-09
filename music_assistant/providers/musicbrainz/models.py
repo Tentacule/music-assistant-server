@@ -291,3 +291,4 @@ class AlbumVersionEnrichment:
     catalog_numbers: list[str]
     label_names: list[str]
     track_count_per_disc: list[int]
+    release_group_id: str | None = None
