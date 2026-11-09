@@ -620,32 +620,39 @@ class AlbumsController(MediaControllerBase[Album]):
         if musicbrainz is None:
             return []
         with contextlib.suppress(*_MUSICBRAINZ_LOOKUP_ERRORS):
+            # album_versions does not include the album itself — fetch it so we
+            # can enrich the currently-open version and use its release group.
+            album = await self.get(item_id, provider_instance_id_or_domain)
+            own_mb_id = album.mbid if album else None
+
             versions = await self.versions(
                 item_id, provider_instance_id_or_domain, limit=0
             )
-            enrichments: list[AlbumVersionEnrichment] = []
+            # Collect mbids to enrich, starting with the album's own mbid so it
+            # is always present in the result map (the detail page needs it).
+            mb_ids_to_enrich: list[str] = []
+            if own_mb_id:
+                mb_ids_to_enrich.append(own_mb_id)
             for version in versions:
                 mb_id = version.mbid
-                if not mb_id:
-                    continue
+                if mb_id and mb_id not in mb_ids_to_enrich:
+                    mb_ids_to_enrich.append(mb_id)
+
+            enrichments: list[AlbumVersionEnrichment] = []
+            for mb_id in mb_ids_to_enrich:
                 enrichment = await musicbrainz.get_version_enrichment(mb_id)
                 if enrichment:
                     enrichments.append(enrichment)
 
             # Filter to a single release group.
-            # Prefer the group of the queried album itself (by its own mbid); fall back to
-            # the group that appears most often (albums outnumber singles in practice).
+            # Prefer the group of the queried album itself; fall back to the most
+            # common group (albums outnumber singles in practice).
             if len({e.release_group_id for e in enrichments if e.release_group_id}) <= 1:
                 return enrichments
-            album = await self.get(item_id, provider_instance_id_or_domain)
-            own_mb_id = album.mbid if album else None
-            if own_mb_id:
-                own_enrichment = next(
-                    (e for e in enrichments if e.mb_release_id == own_mb_id), None
-                )
-                target_group = own_enrichment.release_group_id if own_enrichment else None
-            else:
-                target_group = None
+            own_enrichment = next(
+                (e for e in enrichments if e.mb_release_id == own_mb_id), None
+            ) if own_mb_id else None
+            target_group = own_enrichment.release_group_id if own_enrichment else None
             if not target_group:
                 from collections import Counter
                 target_group = Counter(
