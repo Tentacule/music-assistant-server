@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1
+# Deps base image — build once, reuse on every dev build.
+#
+# Contains: apt build tools, uv, Python venv with requirements_all.txt, PyAV.
+# Does NOT contain: the MA wheel, the frontend wheel, cliairplay.
+#
+# Rebuild only when requirements_all.txt changes (build-docker.ps1 does this
+# automatically by comparing the SHA256 label against the current file).
+#
+# Manual rebuild:
+#   docker build -f Dockerfile.deps -t tentacule/music-assistant:deps .
+#
+ARG BASE_IMAGE_VERSION=latest
+FROM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION
+
+# TODO: Remove git and the compilers once aiolibdatachannel and yappi land on PyPI
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git gcc g++ && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+ENV VIRTUAL_ENV=/app/venv
+ENV URLLIB3_NO_OVERRIDE=1
+
+COPY requirements_all.txt .
+
+RUN uv venv $VIRTUAL_ENV && \
+    uv pip install \
+        --index-strategy unsafe-best-match \
+        --no-binary urllib3-future \
+        -r requirements_all.txt
+
+# Install PyAV from the pre-built wheel bundled in the base image
+# (compiled against the system FFmpeg — must match what pip resolved).
+RUN REQUIRED_VERSION=$($VIRTUAL_ENV/bin/python -c "import importlib.metadata; print(importlib.metadata.version('av'))") && \
+    WHEEL_VERSION=$(ls /usr/local/share/pyav-wheels/av*.whl | grep -oP 'av-\K[0-9.]+') && \
+    if [ "$REQUIRED_VERSION" != "$WHEEL_VERSION" ]; then \
+      echo "ERROR: PyAV version mismatch! Requirements need $REQUIRED_VERSION but base image has $WHEEL_VERSION" && \
+      echo "Rebuild the base image with the correct PyAV version." && \
+      exit 1; \
+    fi && \
+    uv pip install --force-reinstall --no-deps /usr/local/share/pyav-wheels/av*.whl
+
+RUN chmod -R 777 /app

@@ -1,4 +1,15 @@
 # syntax=docker/dockerfile:1
+#
+# Two build modes (selected by build-docker.ps1):
+#
+#   Default — uses local deps image (fast after first build):
+#     docker build --build-arg DEPS_IMAGE=tentacule/music-assistant:deps ...
+#
+#   UseOfficialBase — reuses the official MA image (fastest, ~30 s):
+#     docker build --build-arg DEPS_IMAGE=ghcr.io/music-assistant/server:stable ...
+#
+# In both cases only the MA + frontend wheels are reinstalled, so the
+# expensive requirements_all.txt download is never repeated.
 
 ARG BASE_IMAGE_VERSION=latest
 FROM --platform=$BUILDPLATFORM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION AS cliairplay-download
@@ -33,77 +44,50 @@ RUN set -eu \
 FROM scratch AS cliairplay
 COPY --from=cliairplay-download /cliairplay /cliairplay
 
-# Builder image. It builds the venv that will be copied to the final image
-#
-# Cache layout (fastest incremental rebuilds):
-#   Layer 1 — apt packages + uv: invalidated only by base image changes
-#   Layer 2 — requirements_all.txt install: invalidated only when that file changes
-#   Layer 3 — PyAV: same frequency as layer 2
-#   Layer 4 — dist/ wheels (MA + frontend): invalidated on every dev build
-#
-FROM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION AS builder
+##############################################################################
+# Builder — starts from the deps image (all Python packages pre-installed).
+# When DEPS_IMAGE is the official MA image all system deps and cliairplay are
+# already there; when it is our local deps image only the Python deps are.
+##############################################################################
+ARG DEPS_IMAGE=tentacule/music-assistant:deps
+FROM $DEPS_IMAGE AS builder
 ARG TARGETARCH
 
-# TODO: Remove git and the compilers once aiolibdatachannel and yappi are installed from PyPI
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends git gcc g++ && \
-    rm -rf /var/lib/apt/lists/*
-
-# ensure UV is installed
+# uv might not be present in the official MA image — bring it unconditionally.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# create venv which will be copied to the final image
 ENV VIRTUAL_ENV=/app/venv
-RUN uv venv $VIRTUAL_ENV
-
-# pre-install ALL requirements into the venv
-# IMPORTANT: copy requirements_all.txt BEFORE dist/ so that this expensive layer
-# is only invalidated when requirements change, not on every wheel rebuild.
-# --index-strategy: allow PyPI packages when also using the PyTorch extra index
-# https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
-# Keep urllib3-future from hijacking the urllib3 namespace (see pyproject.toml).
-COPY requirements_all.txt .
 ENV URLLIB3_NO_OVERRIDE=1
-RUN uv pip install \
-    --index-strategy unsafe-best-match \
-    --no-binary urllib3-future \
-    -r requirements_all.txt
 
-# Install PyAV from pre-built wheel (built against system FFmpeg in base image)
-# First verify the wheel version matches what pip resolved to avoid version mismatch
-RUN REQUIRED_VERSION=$($VIRTUAL_ENV/bin/python -c "import importlib.metadata; print(importlib.metadata.version('av'))") && \
-    WHEEL_VERSION=$(ls /usr/local/share/pyav-wheels/av*.whl | grep -oP 'av-\K[0-9.]+') && \
-    if [ "$REQUIRED_VERSION" != "$WHEEL_VERSION" ]; then \
-      echo "ERROR: PyAV version mismatch! Requirements need $REQUIRED_VERSION but base image has $WHEEL_VERSION" && \
-      echo "Please rebuild the base image with the correct PyAV version." && \
-      exit 1; \
-    fi && \
-    uv pip install --force-reinstall --no-deps /usr/local/share/pyav-wheels/av*.whl
-
-# Add local wheels — this layer changes on every dev build (MA + frontend wheel)
+# Local wheels — the only layer that changes on every dev build.
 ADD dist dist
 
-# Install Music Assistant from prebuilt wheel
+# Install Music Assistant from prebuilt wheel.
 ARG MASS_VERSION
 RUN uv pip install \
     --no-cache \
     "music-assistant@dist/music_assistant-${MASS_VERSION}-py3-none-any.whl"
 
 # Override the frontend with a local build when one is present in dist/.
-# This lets a dev build replace the PyPI frontend without changing pyproject.toml.
 RUN ls dist/music_assistant_frontend-*.whl 1>/dev/null 2>&1 && \
     uv pip install --no-deps --force-reinstall dist/music_assistant_frontend-*.whl || true
 
+# Install cliairplay into the MA providers directory.
+# Skip individual binaries that are already present (official-image base case).
 COPY --from=cliairplay /cliairplay /tmp/cliairplay
 RUN SITE_PACKAGES="$("$VIRTUAL_ENV/bin/python" -c \
         'import sysconfig; print(sysconfig.get_path("purelib"))')" \
     && CLIAIRPLAY_BIN_DIR="${SITE_PACKAGES}/music_assistant/providers/airplay/bin" \
     && mkdir -p "$CLIAIRPLAY_BIN_DIR" \
-    && mv /tmp/cliairplay/* "$CLIAIRPLAY_BIN_DIR/" \
-    && rmdir /tmp/cliairplay \
+    && for f in /tmp/cliairplay/*; do \
+         dest="$CLIAIRPLAY_BIN_DIR/$(basename "$f")"; \
+         [ -f "$dest" ] || mv "$f" "$dest"; \
+       done \
+    && rm -rf /tmp/cliairplay \
+    && chmod 755 "$CLIAIRPLAY_BIN_DIR"/cliairplay-linux-* \
     && "$CLIAIRPLAY_BIN_DIR"/cliairplay-linux-* --check
 
-# Pre-compile Python bytecode for faster startup
+# Pre-compile Python bytecode for faster startup.
 RUN $VIRTUAL_ENV/bin/python -m compileall -q $VIRTUAL_ENV/lib/python*/site-packages/music_assistant
 
 # Identifies the official release image, see music_assistant/helpers/build_info.py
@@ -112,18 +96,15 @@ ARG MASS_WHEEL_SHA256
 RUN printf '{"version": "%s", "revision": "%s", "wheel_sha256": "%s"}\n' \
     "$MASS_VERSION" "$MASS_REVISION" "$MASS_WHEEL_SHA256" > /app/build_info.json
 
-# we need to set (very permissive) permissions to the workdir
-# and /tmp to allow running the container as non-root
-# IMPORTANT: chmod here, NOT on the final image, to avoid creating extra layers and increase size!
-#
+# Permissive permissions so the container can run as non-root.
+# IMPORTANT: do this in the builder stage, not the final stage, to avoid extra layers.
 RUN chmod -R 777 /app \
     && chmod 755 \
         "$VIRTUAL_ENV"/lib/python*/site-packages/music_assistant/providers/airplay/bin/cliairplay-linux-*
 
-##################################################################################################
-
-# FINAL docker image for music assistant server
-
+##############################################################################
+# Final image
+##############################################################################
 FROM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION
 
 ENV VIRTUAL_ENV=/app/venv
@@ -134,14 +115,12 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends tini \
     && rm -rf /var/lib/apt/lists/*
 
-# copy the already built /app dir
+# Copy the already-built /app dir from the builder stage.
 COPY --from=builder /app /app
 
-# the /app contents have correct permissions but for some reason /app itself does not.
-# so apply again, but ONLY to the dir (otherwise we increase the size)
+# /app itself needs 777 even though its contents already have it.
 RUN chmod 777 /app
 
-# Set some labels
 ARG MASS_VERSION
 ARG TARGETPLATFORM
 LABEL \
