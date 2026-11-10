@@ -845,15 +845,20 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         limit: int | None = None,
         offset: int = 0,
         favorite: bool | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
     ) -> MediaCollection[ItemCls]:
         """
-        Get a collection and optionally search or page its items.
+        Get a collection and optionally search, sort or page its items.
 
         :param item_id: The collection ID.
         :param search: Only include items whose name contains this text.
         :param limit: Maximum number of items to return; omitted or 0 returns them all.
         :param offset: Number of items to skip.
         :param favorite: Only include the items the current user likes (True) or dislikes (False).
+        :param sort_field: Sort field of an album series (ListingType.ALBUM_SERIES); the
+            series order when omitted. Other collections keep their series order.
+        :param sort_direction: Sort direction, the field's default when omitted.
         """
         name = get_collection_name_from_item_id(item_id)
         query_params: dict[str, Any] = {"collection_name": name}
@@ -885,6 +890,15 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
         if favorite is not None:
             items = UniqueList(item for item in items if item.favorite is favorite)
+        if self.media_type == MediaType.ALBUM and (sort_field or sort_direction):
+            items = UniqueList(
+                apply_listing(
+                    items,
+                    ListingType.ALBUM_SERIES,
+                    sort_field=sort_field,
+                    sort_direction=sort_direction,
+                )
+            )
         if offset or limit:
             items = UniqueList(items[offset : offset + limit] if limit else items[offset:])
         return cast(

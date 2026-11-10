@@ -26,6 +26,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    MediaItemCollection,
     MediaItemImage,
     ProviderMapping,
     Track,
@@ -1061,6 +1062,7 @@ def _musicbrainz(
     musicbrainz.resolve_recording = AsyncMock(return_value=recording)
     musicbrainz.identify_artist = AsyncMock(return_value=None)
     musicbrainz.get_artist_details = AsyncMock(return_value=artist)
+    musicbrainz.get_releasegroup_series = AsyncMock(return_value=[])
     return musicbrainz
 
 
@@ -1104,6 +1106,26 @@ async def test_album_identity_fills_the_blanks_and_keeps_existing_values() -> No
     assert album.get_external_id(ExternalID.DISCOGS) == "1119453"
     assert album.metadata.last_musicbrainz_lookup is not None
     _mass(enrichment).music.albums.update_item_in_library.assert_awaited_once_with("1", album)
+
+
+@pytest.mark.asyncio
+async def test_album_identity_adds_the_release_group_series() -> None:
+    """The series the album's release group is part of joins the series the album has."""
+    musicbrainz = _musicbrainz(release=_release())
+    musicbrainz.get_releasegroup_series = AsyncMock(
+        return_value=[MediaItemCollection(title="Now That's What I Call Music!", sequence=3)]
+    )
+    enrichment = _enrichment(musicbrainz)
+    album = _album({(ExternalID.MB_ALBUM, RELEASE_ID)})
+    album.metadata.collections = UniqueList([MediaItemCollection(title="Tagged Series")])
+
+    await enrichment._update_album_metadata(album, force_refresh=True)
+
+    musicbrainz.get_releasegroup_series.assert_awaited_once_with(RELEASE_GROUP_ID)
+    assert album.metadata.collections == [
+        MediaItemCollection(title="Tagged Series"),
+        MediaItemCollection(title="Now That's What I Call Music!", sequence=3),
+    ]
 
 
 @pytest.mark.asyncio

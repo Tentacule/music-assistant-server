@@ -13,18 +13,29 @@ from music_assistant_models.enums import (
     EventType,
     ExternalID,
     ListingType,
+    MediaType,
     SortDirection,
     SortField,
 )
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.helpers import create_safe_string
-from music_assistant_models.media_items import Album  # noqa: TC002
+from music_assistant_models.media_items import (
+    Album,
+    MediaCollection,
+    MediaItemCollection,
+    UniqueList,
+)
 
 from music_assistant.constants import DB_TABLE_ALBUMS, DB_TABLE_EXTERNAL_ID_LOOKUP
 from music_assistant.controllers.music.custom_migrations import DB_TABLE_ALBUM_GROUP_DEFAULTS
-from music_assistant.controllers.music.helpers import search_name_match_clause
+from music_assistant.controllers.music.helpers import (
+    search_name_match_clause,
+    series_filter_clause,
+)
 from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
+from music_assistant.helpers.collections import get_collection_item_id
 from music_assistant.helpers.external_ids import barcode_to_upc, is_valid_barcode
+from music_assistant.helpers.json import json_loads
 from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
 
 from .base import MediaControllerBase
@@ -108,9 +119,11 @@ class AlbumGroupsMixin(_Base):
         sort_field: SortField | None = None,
         sort_direction: SortDirection | None = None,
         summary: bool = True,
+        collapse_collections: bool = False,
+        series_filter: str = "all",
         reachable_via: list[str] | None = None,
         random_seed: int | None = None,
-    ) -> list[Album]:
+    ) -> list[Album | MediaCollection[Album]]:
         """
         Return the library albums with one item per release group.
 
@@ -129,6 +142,9 @@ class AlbumGroupsMixin(_Base):
         :param sort_field: Sort field to use.
         :param sort_direction: Sort direction, the field's default when omitted.
         :param summary: Return slim summary items instead of fully hydrated items.
+        :param collapse_collections: Return the albums of a series as one MediaCollection.
+        :param series_filter: "all" (default), "albums" for the albums in no series only,
+            "series" for the albums in a series only.
         :param reachable_via: Restrict to items reachable through these provider instance ids.
         :param random_seed: Keep random ordering stable across pages with the same seed.
         """
@@ -147,6 +163,8 @@ class AlbumGroupsMixin(_Base):
         if album_types:
             parts.append("albums.album_type IN :album_types")
             params["album_types"] = [x.value for x in album_types]
+        if series_clause := series_filter_clause(series_filter):
+            parts.append(series_clause)
         artists_joined = field == SortField.ARTIST_NAME
         if artists_joined:
             joins.append(artist_join)
@@ -173,14 +191,15 @@ class AlbumGroupsMixin(_Base):
             query_joins: list[str],
             query_limit: int,
             query_offset: int,
-        ) -> list[Album]:
+        ) -> list[Album | MediaCollection[Album]]:
             query_params = dict(params)
             clause = self._representative_clause(
                 query_parts,
                 query_joins,
                 query_params,
                 favorite=favorite,
-                search=query_search,
+                # a collapsed listing searches the names of the series and albums it lists
+                search=None if collapse_collections else query_search,
                 genre=genre,
                 provider_filter=provider_filter,
                 played_only=played_only,
@@ -201,6 +220,7 @@ class AlbumGroupsMixin(_Base):
                 played_only=played_only,
                 in_library_only=True,
                 summary=summary,
+                collapse_collections=collapse_collections,
                 reachable_via=reachable_via,
                 random_seed=random_seed,
             )
@@ -264,7 +284,9 @@ class AlbumGroupsMixin(_Base):
         album_types: list[AlbumType] | None = None,
         favorite: bool | None = None,
         random_seed: int | None = None,
-    ) -> list[Album]:
+        collapse_collections: bool = False,
+        series_filter: str = "all",
+    ) -> list[Album | MediaCollection[Album]]:
         """
         Return the albums of an artist with one library item per release group.
 
@@ -279,6 +301,10 @@ class AlbumGroupsMixin(_Base):
         :param album_types: Only list albums whose type is included.
         :param favorite: Only list the albums the current user likes (True) or dislikes (False).
         :param random_seed: Keep random ordering stable across pages with the same seed.
+        :param collapse_collections: Return the albums of a series as one MediaCollection,
+            at the place of its first album.
+        :param series_filter: "all" (default), "albums" for the albums in no series only,
+            "series" for the albums in a series only.
         """
         albums = await self.mass.music.artists.albums(
             item_id,
@@ -292,8 +318,78 @@ class AlbumGroupsMixin(_Base):
             favorite=favorite,
             random_seed=random_seed,
         )
-        collapsed = await self._collapse_groups(albums)
+        collapsed: list[Album | MediaCollection[Album]] = list(await self._collapse_groups(albums))
+        if collapse_collections or series_filter in ("albums", "series"):
+            collapsed = await self._apply_series(collapsed, collapse_collections, series_filter)
         return collapsed[offset : offset + limit] if limit else collapsed[offset:]
+
+    async def _apply_series(
+        self,
+        albums: list[Album | MediaCollection[Album]],
+        collapse_collections: bool,
+        series_filter: str,
+    ) -> list[Album | MediaCollection[Album]]:
+        """
+        Filter a listing of albums on their series and optionally group each series.
+
+        The series of a library album are read from the library, so a provider album is in
+        no series. An album in two series shows up in both.
+
+        :param albums: The albums, in the order they are listed.
+        :param collapse_collections: Replace the albums of a series by one MediaCollection.
+        :param series_filter: "albums" keeps the albums in no series, "series" those in one.
+        """
+        series_of = await self._library_album_series(albums)
+        result: list[Album | MediaCollection[Album]] = []
+        groups: dict[str, MediaCollection[Album]] = {}
+        sequences: dict[str, list[tuple[Any, Album]]] = {}
+        for album in albums:
+            series = series_of.get(album.item_id, []) if _is_library_album(album) else []
+            if series_filter == "albums" and series:
+                continue
+            if series_filter == "series" and not series:
+                continue
+            if not collapse_collections or not series:
+                result.append(album)
+                continue
+            for collection in series:
+                if collection.title not in groups:
+                    groups[collection.title] = MediaCollection(
+                        item_id=get_collection_item_id(collection.title, MediaType.ALBUM),
+                        provider="library",
+                        name=collection.title,
+                        provider_mappings=set(),
+                        items=UniqueList(),
+                    )
+                    sequences[collection.title] = []
+                    result.append(groups[collection.title])
+                sequences[collection.title].append((collection.sequence, cast("Album", album)))
+        for title, group in groups.items():
+            group.items = UniqueList(
+                album for _, album in sorted(sequences[title], key=lambda x: _sequence_key(x[0]))
+            )
+        return result
+
+    async def _library_album_series(
+        self, albums: list[Album | MediaCollection[Album]]
+    ) -> dict[str, list[MediaItemCollection]]:
+        """Return the series of each library album in the listing, by item id."""
+        library_ids = [int(album.item_id) for album in albums if _is_library_album(album)]
+        if not library_ids:
+            return {}
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"""SELECT item_id, json_extract(metadata, '$.collections') AS collections
+                FROM {DB_TABLE_ALBUMS} WHERE item_id IN :item_ids""",
+            {"item_ids": library_ids},
+            limit=0,
+        )
+        return {
+            str(row["item_id"]): [
+                MediaItemCollection.from_dict(entry) for entry in json_loads(row["collections"])
+            ]
+            for row in rows
+            if row["collections"]
+        }
 
     async def album_group_versions(
         self,
@@ -460,9 +556,15 @@ class AlbumGroupsMixin(_Base):
             ) ranked WHERE ranked.group_rank = 1
         )"""
 
-    async def _collapse_groups(self, albums: list[Album]) -> list[Album]:
-        """Return the albums keeping one library item per release group, in their order."""
-        library_ids = [int(album.item_id) for album in albums if album.provider == "library"]
+    async def _collapse_groups[AlbumOrSeries: Album | MediaCollection[Album]](
+        self, albums: list[AlbumOrSeries]
+    ) -> list[AlbumOrSeries]:
+        """
+        Return the albums keeping one library item per release group, in their order.
+
+        A series (collection) passes through as it is.
+        """
+        library_ids = [int(album.item_id) for album in albums if _is_library_album(album)]
         if not library_ids:
             return albums
         rows = await self.mass.music.database.get_rows_from_query(
@@ -492,7 +594,7 @@ class AlbumGroupsMixin(_Base):
         return [
             album
             for album in albums
-            if album.provider != "library"
+            if not _is_library_album(album)
             or int(album.item_id) not in group_of_item
             or int(album.item_id) in winners
         ]
@@ -582,3 +684,18 @@ class _BarcodeBudget:
             return False
         self._remaining -= 1
         return True
+
+
+def _is_library_album(item: Album | MediaCollection[Album]) -> bool:
+    """Return whether the item is a library album, not a series or a provider album."""
+    return item.media_type == MediaType.ALBUM and item.provider == "library"
+
+
+def _sequence_key(sequence: Any) -> tuple[int, float, str]:
+    """Order the numbers in a series first, then the text ones, then the albums without one."""
+    if sequence is None or sequence == "":
+        return (2, 0.0, "")
+    try:
+        return (0, float(sequence), "")
+    except TypeError, ValueError:
+        return (1, 0.0, str(sequence).casefold())

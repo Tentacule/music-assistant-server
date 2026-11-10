@@ -788,6 +788,63 @@ async def test_audiobook_collections_collapse_and_preserve_order(
     assert [item.name for item in favorites.items] == ["Alpha 2"]
 
 
+async def test_album_series_filter_and_collapse(
+    mass: MusicAssistant,
+) -> None:
+    """Albums filter on series membership, flat or collapsed into series."""
+    controller = mass.music.albums
+    albums = (
+        ("Saga 2", [("Saga", 2.0)]),
+        ("Saga 1", [("Saga", 1.0)]),
+        ("Crossover", [("Saga", 3.0), ("Other", 1.0)]),
+        ("Standalone", []),
+    )
+    for name, series in albums:
+        await controller.add_item_to_library(
+            Album(
+                item_id="0",
+                provider="library",
+                name=name,
+                provider_mappings={_mapping()},
+                metadata=MediaItemMetadata(
+                    collections=UniqueList(
+                        [MediaItemCollection(title=title, sequence=seq) for title, seq in series]
+                    )
+                    if series
+                    else None
+                ),
+            )
+        )
+
+    async def names(**kwargs: Any) -> list[str]:
+        items = await controller.library_items(sort_field=SortField.NAME, **kwargs)
+        return [item.name for item in items]
+
+    assert await names() == ["Crossover", "Saga 1", "Saga 2", "Standalone"]
+    assert await names(series_filter="albums") == ["Standalone"]
+    assert await names(series_filter="series") == ["Crossover", "Saga 1", "Saga 2"]
+    assert await names(collapse_collections=True) == ["Other", "Saga", "Standalone"]
+    assert await names(collapse_collections=True, series_filter="albums") == ["Standalone"]
+    assert await names(collapse_collections=True, series_filter="series") == ["Other", "Saga"]
+
+    collapsed = await controller.library_items(collapse_collections=True)
+    saga = next(item for item in collapsed if item.name == "Saga")
+    assert isinstance(saga, MediaCollection)
+    collection = await controller.get_collection(saga.item_id)
+    assert [item.name for item in collection.items] == ["Saga 1", "Saga 2", "Crossover"]
+    grouped = await controller.album_group_items(
+        sort_field=SortField.NAME, collapse_collections=True, series_filter="series"
+    )
+    assert [item.name for item in grouped] == ["Other", "Saga"]
+    grouped_search = await controller.album_group_items(search="Saga", collapse_collections=True)
+    assert "Saga" in [item.name for item in grouped_search]
+
+    by_name = await controller.get_collection(
+        saga.item_id, sort_field=SortField.NAME, sort_direction=SortDirection.DESC
+    )
+    assert [item.name for item in by_name.items] == ["Saga 2", "Saga 1", "Crossover"]
+
+
 async def test_artist_audiobooks_collapse_collections(
     mass: MusicAssistant,
 ) -> None:

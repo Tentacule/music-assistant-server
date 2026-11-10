@@ -85,6 +85,7 @@ def _tags(
         musicbrainz_albumid=album_id,
         musicbrainz_releasegroupid=rg_id,
         musicbrainz_albumartistids=album_artist_ids,
+        series=None,
     )
 
 
@@ -1581,6 +1582,7 @@ async def test_parse_album_scans_folder_once_when_track_dir_equals_album_dir() -
     provider.config.get_value = MagicMock(return_value="various_artists")
 
     tags = MagicMock(
+        series=None,
         album="My Album",
         album_sort=None,
         album_artists=[],
@@ -1635,6 +1637,7 @@ async def test_parse_album_never_enriches_from_the_losing_candidate_folders_own_
     provider._read_file = AsyncMock(side_effect=_read_file)
 
     tags = MagicMock(
+        series=None,
         album="My Album",
         album_sort=None,
         album_artists=[],
@@ -1686,6 +1689,7 @@ async def test_parse_album_artist_resolves_from_ancestor_nfo_while_album_stays_s
     provider._read_file = AsyncMock(side_effect=_read_file)
 
     tags = MagicMock(
+        series=None,
         album="My Album",
         album_sort=None,
         album_artists=["The Artist"],
@@ -1722,6 +1726,7 @@ async def test_parse_album_artist_resolves_from_ancestor_name_while_album_stays_
     provider._scandir = AsyncMock(return_value=[])  # no NFOs anywhere
 
     tags = MagicMock(
+        series=None,
         album="My Album",
         album_sort=None,
         album_artists=["The Artist"],
@@ -1762,6 +1767,7 @@ async def test_parse_album_exact_folder_match_skips_nfo_resolution() -> None:
     )
 
     tags = MagicMock(
+        series=None,
         album="My Album",
         album_sort=None,
         album_artists=["The Artist"],
@@ -1808,6 +1814,7 @@ async def test_parse_album_validated_nfo_outranks_a_relaxed_date_prefix_match() 
     provider._read_file = AsyncMock(side_effect=_read_file)
 
     tags = MagicMock(
+        series=None,
         album="My Album",
         album_sort=None,
         album_artists=["The Artist"],
@@ -1851,6 +1858,7 @@ async def test_parse_album_malformed_nfo_falls_through_to_relaxed_date_prefix_ma
     provider._read_file = AsyncMock(side_effect=_read_file)
 
     tags = MagicMock(
+        series=None,
         album="My Album",
         album_sort=None,
         album_artists=["The Artist"],
@@ -1894,6 +1902,7 @@ async def test_parse_album_relaxed_match_never_trusts_a_folder_the_nfo_tier_reje
     )
 
     tags = MagicMock(
+        series=None,
         album="My Album",
         album_sort=None,
         album_artists=["The Artist"],
@@ -1939,6 +1948,7 @@ def _missing_album_artist_provider(nfo_data: bytes, fallback_action: str) -> Any
 def _missing_album_artist_tags() -> Any:
     """Build tags for a track in "Artist/My Album" without an album artist."""
     return MagicMock(
+        series=None,
         album="My Album",
         album_sort=None,
         album_artists=[],

@@ -19,7 +19,12 @@ from music_assistant_models.enums import (
     MediaType,
 )
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import MediaItemLink, MediaItemMetadata, UniqueList
+from music_assistant_models.media_items import (
+    MediaItemCollection,
+    MediaItemLink,
+    MediaItemMetadata,
+    UniqueList,
+)
 from music_assistant_models.media_items.metadata import LifeSpan
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
@@ -48,6 +53,7 @@ from .constants import (
     RECORDING_LENGTH_TOLERANCE_MS,
     RELEASE_BROWSE_MAX_PAGES,
     RELEASE_GROUP_BROWSE_LIMIT,
+    RELEASE_GROUP_SERIES_TYPE,
     REVERSE_URL_DOMAINS,
     REVERSE_URL_HOSTS,
     SECONDARY_TYPE_MAPPING,
@@ -68,6 +74,7 @@ from .models import (
     MusicBrainzReleaseGroup,
     MusicBrainzTag,
     release_year,
+    series_sequence,
 )
 from .recommendations import MusicBrainzRecommendationManager
 
@@ -515,7 +522,8 @@ class MusicbrainzProvider(MetadataProvider):
         raise InvalidDataError(msg)
 
     async def get_version_enrichment(self, mb_release_id: str) -> AlbumVersionEnrichment | None:
-        """Return catalog number, label and per-disc track counts for a MB release.
+        """
+        Return catalog number, label and per-disc track counts for a MB release.
 
         Uses the already-cached get_release_details call (30-day cache), so there is no
         extra network cost after the first fetch.  Returns None on network error or unknown MBID.
@@ -545,7 +553,8 @@ class MusicbrainzProvider(MetadataProvider):
     async def get_release_group_series_info(
         self, release_group_id: str
     ) -> AlbumReleaseGroupSeriesInfo | None:
-        """Return MusicBrainz series membership for a release group.
+        """
+        Return MusicBrainz series membership for a release group.
 
         Uses get_data() (30-day cache), so there is no extra network cost after the first
         fetch.  Returns None when the release group belongs to no series or on any error.
@@ -706,6 +715,28 @@ class MusicbrainzProvider(MetadataProvider):
                 raise InvalidDataError from err
         msg = "Invalid MusicBrainz ReleaseGroup ID provided"
         raise InvalidDataError(msg)
+
+    async def get_releasegroup_series(self, releasegroup_id: str) -> list[MediaItemCollection]:
+        """
+        Get the release group series a MusicBrainz ReleaseGroup is part of.
+
+        :param releasegroup_id: The MusicBrainz ReleaseGroup id.
+        :return: A collection per series, with the release group's number in it as sequence.
+        """
+        endpoint = f"release-group/{releasegroup_id}?inc=series-rels"
+        if not (result := await self._api_client.get_data(endpoint)):
+            return []
+        if "id" not in result:
+            result["id"] = releasegroup_id
+        try:
+            release_group = MusicBrainzReleaseGroup.from_raw(result)
+        except (MissingField, InvalidFieldValue) as err:
+            raise InvalidDataError from err
+        return [
+            MediaItemCollection(title=relation.series.name, sequence=series_sequence(relation))
+            for relation in release_group.relations or ()
+            if relation.series and relation.series.type == RELEASE_GROUP_SERIES_TYPE
+        ]
 
     async def get_artist_details_by_album(
         self, artistname: str, ref_album: Album
