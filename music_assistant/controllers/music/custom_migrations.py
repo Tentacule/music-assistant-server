@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
 
-from music_assistant.constants import DB_TABLE_SETTINGS
+from music_assistant.constants import DB_TABLE_ALBUM_TRACKS, DB_TABLE_SETTINGS
 
 if TYPE_CHECKING:
     import logging
@@ -31,9 +31,24 @@ async def _create_album_group_defaults(database: DatabaseConnection) -> None:
     )
 
 
+async def _add_album_track_disc_subtitle(database: DatabaseConnection) -> None:
+    """Add the disc name of a multi-disc album (discsubtitle tag) to its album tracks."""
+    columns = {
+        row["name"]
+        for row in await database.get_rows_from_query(
+            f"PRAGMA table_info({DB_TABLE_ALBUM_TRACKS})", limit=0
+        )
+    }
+    if "disc_subtitle" not in columns:
+        await database.execute(
+            f"ALTER TABLE {DB_TABLE_ALBUM_TRACKS} ADD COLUMN disc_subtitle TEXT NOT NULL DEFAULT ''"
+        )
+
+
 # append only: the position of a step is its version number
 _STEPS: Final[tuple[Callable[[DatabaseConnection], Awaitable[None]], ...]] = (
     _create_album_group_defaults,
+    _add_album_track_disc_subtitle,
 )
 
 

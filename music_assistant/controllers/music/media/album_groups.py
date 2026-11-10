@@ -324,9 +324,7 @@ class AlbumGroupsMixin(_Base):
         sort_field, sort_direction = resolve_listing_sort(
             ListingType.VERSIONS, sort_field, sort_direction
         )
-        album = await self.get(
-            item_id, provider_instance_id_or_domain, allow_update_metadata=False
-        )
+        album = await self.get(item_id, provider_instance_id_or_domain, allow_update_metadata=False)
         lookups = _BarcodeBudget()
         if not (release_group_id := await self._resolve_release_group(album, lookups)):
             return []

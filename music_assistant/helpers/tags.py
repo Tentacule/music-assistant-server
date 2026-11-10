@@ -1205,7 +1205,7 @@ def _id3_get_tag_text(tags: ID3Tags, key: str) -> Any | None:
     return None
 
 
-def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:  # noqa: PLR0912, PLR0915
+def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:  # noqa: C901, PLR0912, PLR0915
     """
     Parse ID3 tags (MP3 files) from mutagen ID3Tags object.
 

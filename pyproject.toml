@@ -100,9 +100,6 @@ tests/providers/tidal/fixtures/**,\
 NOTICE,\
 """
 
-[tool.uv.sources]
-music-assistant-models = { path = "../music-assistant-models", editable = true }
-
 [tool.setuptools]
 include-package-data = true
 packages = ["music_assistant"]
@@ -294,6 +291,7 @@ url = "https://download.pytorch.org/whl/cpu"
 no-binary-package = ["urllib3-future"]
 
 [tool.uv.sources]
+music-assistant-models = { path = "../music-assistant-models", editable = true }
 torch = {index = "pytorch-cpu"}
 torchaudio = {index = "pytorch-cpu"}
 

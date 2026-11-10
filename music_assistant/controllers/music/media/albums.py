@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from itertools import groupby
@@ -618,7 +619,8 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
         item_id: str,
         provider_instance_id_or_domain: str,
     ) -> list[AlbumVersionEnrichment]:
-        """Return MusicBrainz enrichment for all versions of an album the user has in their sources.
+        """
+        Return MusicBrainz enrichment for all versions of an album the user has in their sources.
 
         Fetches the album's provider versions, then for each version that has a MB_ALBUM MBID
         retrieves the catalog number, label and per-disc track count from the MusicBrainz cache.
@@ -635,9 +637,7 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
             album = await self.get(item_id, provider_instance_id_or_domain)
             own_mb_id = album.mbid if album else None
 
-            versions = await self.versions(
-                item_id, provider_instance_id_or_domain, limit=0
-            )
+            versions = await self.versions(item_id, provider_instance_id_or_domain, limit=0)
             # Collect mbids to enrich, starting with the album's own mbid so it
             # is always present in the result map (the detail page needs it).
             mb_ids_to_enrich: list[str] = []
@@ -659,12 +659,13 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
             # common group (albums outnumber singles in practice).
             if len({e.release_group_id for e in enrichments if e.release_group_id}) <= 1:
                 return enrichments
-            own_enrichment = next(
-                (e for e in enrichments if e.mb_release_id == own_mb_id), None
-            ) if own_mb_id else None
+            own_enrichment = (
+                next((e for e in enrichments if e.mb_release_id == own_mb_id), None)
+                if own_mb_id
+                else None
+            )
             target_group = own_enrichment.release_group_id if own_enrichment else None
             if not target_group:
-                from collections import Counter
                 target_group = Counter(
                     e.release_group_id for e in enrichments if e.release_group_id
                 ).most_common(1)[0][0]
@@ -675,7 +676,8 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
         self,
         release_group_id: str,
     ) -> AlbumReleaseGroupSeriesInfo | None:
-        """Return MusicBrainz series membership for a release group.
+        """
+        Return MusicBrainz series membership for a release group.
 
         Returns None when MusicBrainz is unavailable, on any network error,
         or when this release group belongs to no series.

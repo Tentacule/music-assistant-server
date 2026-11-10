@@ -1704,9 +1704,9 @@ class TracksController(MediaControllerBase[Track]):
         db_id: int,
         album: Album | ItemMapping,
         disc_number: int,
-        disc_subtitle: str,
         track_number: int,
         overwrite: bool = False,
+        disc_subtitle: str = "",
     ) -> None:
         """
         Store Track Album info.
