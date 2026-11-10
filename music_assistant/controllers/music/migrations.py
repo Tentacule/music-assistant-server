@@ -1426,6 +1426,19 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
                     f"ON {DB_TABLE_PLAY_HISTORY}(userid,timestamp,media_type,provider,item_id)"
                 )
 
+    if prev_version <= 71:
+        # add disc_subtitle column to album_tracks (multi-disc album disc name support)
+        album_tracks_columns = {
+            row["name"]
+            for row in await database.get_rows_from_query(
+                "PRAGMA table_info(album_tracks)", limit=0
+            )
+        }
+        if "disc_subtitle" not in album_tracks_columns:
+            await database.execute(
+                "ALTER TABLE album_tracks ADD COLUMN disc_subtitle TEXT NOT NULL DEFAULT ''"
+            )
+
     # (re)build the FTS search tables so they are in sync with the content tables;
     # this both populates them on first migration to the FTS-enabled schema and
     # repairs them after any migration that rewrote rows without the sync triggers active

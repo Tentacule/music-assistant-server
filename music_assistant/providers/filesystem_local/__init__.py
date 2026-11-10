@@ -3102,6 +3102,8 @@ class LocalFileSystemProvider(MusicProvider):
         track.metadata.genres = set(tags.genres)
         if tags.disc:
             track.disc_number = tags.disc
+        if tags.disc_subtitle:
+            track.disc_subtitle = tags.disc_subtitle
         if tags.track:
             track.track_number = tags.track
         track.metadata.copyright = tags.get("copyright")

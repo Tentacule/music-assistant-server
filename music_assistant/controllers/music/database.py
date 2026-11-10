@@ -506,6 +506,7 @@ class MusicDatabaseSetupMixin:
             [track_id] INTEGER NOT NULL,
             [album_id] INTEGER NOT NULL,
             [disc_number] INTEGER NOT NULL,
+            [disc_subtitle] TEXT NOT NULL DEFAULT '',
             [track_number] INTEGER NOT NULL,
             FOREIGN KEY([track_id]) REFERENCES [tracks]([item_id]),
             FOREIGN KEY([album_id]) REFERENCES [albums]([item_id]),

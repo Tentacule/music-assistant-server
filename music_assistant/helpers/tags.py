@@ -473,6 +473,11 @@ class AudioTags:
         return None
 
     @property
+    def disc_subtitle(self) -> str:
+        """Return disc subtitle (name) tag if present."""
+        return self.tags.get("discsubtitle") or ""
+
+    @property
     def track(self) -> int | None:
         """Return track tag if present."""
         if tag := self.tags.get("track"):
@@ -1280,6 +1285,10 @@ def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:  # noqa: PLR0912, PLR0915
     if albumsort := _id3_get_tag_text(tags, "TSOA"):
         result["albumsort"] = albumsort[0]
 
+    # Disc subtitle (ID3 Set subtitle / disc name for multi-disc albums)
+    if disc_subtitle := _id3_get_tag_text(tags, "TSST"):
+        result["discsubtitle"] = disc_subtitle[0]
+
     # Synchronized lyrics
     for frame in tags.getall("SYLT"):  # type: ignore[no-untyped-call]
         # Only consider lyrics type and millisecond timestamp format
@@ -1426,6 +1435,10 @@ def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
     if compilation := _vorbis_get_single(tags, "COMPILATION"):
         result["compilation"] = compilation
 
+    # Disc subtitle (disc name for multi-disc albums)
+    if disc_subtitle := _vorbis_get_single(tags, "DISCSUBTITLE"):
+        result["discsubtitle"] = disc_subtitle
+
     # album type may be multi-value (repeated fields); join them
     if releasetypes := _vorbis_get_multi(tags, "RELEASETYPE"):
         result["musicbrainzalbumtype"] = ";".join(releasetypes)
@@ -1567,6 +1580,8 @@ def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: C901, PLR0912, PL
         result["track"] = track
     if disc := _apev2_get_single(tags, "Disc"):
         result["disc"] = disc
+    if disc_subtitle := _apev2_get_single(tags, "DiscSubtitle"):
+        result["discsubtitle"] = disc_subtitle
 
     # Date
     if date := _apev2_get_single(tags, "Year"):

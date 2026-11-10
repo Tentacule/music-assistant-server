@@ -2817,6 +2817,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if track_album := db_row_dict.get("track_album"):
             db_row_dict["album"] = track_album
             db_row_dict["disc_number"] = track_album["disc_number"]
+            db_row_dict["disc_subtitle"] = track_album.get("disc_subtitle", "")
             db_row_dict["track_number"] = track_album["track_number"]
             # Track.image prefers this album thumb; it stays out of the track's own images,
             # which get stored with the track

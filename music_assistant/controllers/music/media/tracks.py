@@ -180,6 +180,7 @@ class TracksController(MediaControllerBase[Track]):
                     'media_type', 'album',
                     'year', albums.year,
                     'disc_number', album_tracks.disc_number,
+                    'disc_subtitle', album_tracks.disc_subtitle,
                     'track_number', album_tracks.track_number,
                     'images', json_extract(albums.metadata, '$.images')
                 ) FROM album_tracks
@@ -212,6 +213,7 @@ class TracksController(MediaControllerBase[Track]):
                     'sort_name', albums.sort_name,
                     'year', albums.year,
                     'disc_number', album_tracks.disc_number,
+                    'disc_subtitle', album_tracks.disc_subtitle,
                     'track_number', album_tracks.track_number,
                     'images', json_extract(albums.metadata, '$.images')
                 ) FROM album_tracks
@@ -1600,6 +1602,7 @@ class TracksController(MediaControllerBase[Track]):
                 db_id=db_id,
                 album=item.album,
                 disc_number=getattr(item, "disc_number", 0),
+                disc_subtitle=getattr(item, "disc_subtitle", ""),
                 track_number=getattr(item, "track_number", 0),
             )
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
@@ -1657,6 +1660,7 @@ class TracksController(MediaControllerBase[Track]):
                 db_id=db_id,
                 album=update.album,
                 disc_number=update.disc_number or cur_item.disc_number,
+                disc_subtitle=update.disc_subtitle or cur_item.disc_subtitle,
                 track_number=update.track_number or cur_item.track_number,
                 overwrite=overwrite,
             )
@@ -1700,6 +1704,7 @@ class TracksController(MediaControllerBase[Track]):
         db_id: int,
         album: Album | ItemMapping,
         disc_number: int,
+        disc_subtitle: str,
         track_number: int,
         overwrite: bool = False,
     ) -> None:
@@ -1736,6 +1741,7 @@ class TracksController(MediaControllerBase[Track]):
                 "track_id": db_id,
                 "album_id": int(db_album.item_id),
                 "disc_number": disc_number,
+                "disc_subtitle": disc_subtitle,
                 "track_number": track_number,
             },
         )
