@@ -72,7 +72,10 @@ from music_assistant.models.music_provider import (
     MusicProvider,
     provider_fetch_log_level,
 )
-from music_assistant.providers.musicbrainz.models import AlbumVersionEnrichment
+from music_assistant.providers.musicbrainz.models import (
+    AlbumReleaseGroupSeriesInfo,
+    AlbumVersionEnrichment,
+)
 from music_assistant.providers.musicbrainz.provider import (
     is_digital_release,
     relation_urls,
@@ -141,6 +144,11 @@ class AlbumsController(MediaControllerBase[Album]):
         self.mass.register_api_command(
             f"music/{api_base}/versions_enrichment",
             self.versions_enrichment,
+            required_scope=Scope.LIBRARY_READ,
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/release_group_series",
+            self.release_group_series,
             required_scope=Scope.LIBRARY_READ,
         )
 
@@ -660,6 +668,22 @@ class AlbumsController(MediaControllerBase[Album]):
                 ).most_common(1)[0][0]
             return [e for e in enrichments if e.release_group_id == target_group]
         return []
+
+    async def release_group_series(
+        self,
+        release_group_id: str,
+    ) -> AlbumReleaseGroupSeriesInfo | None:
+        """Return MusicBrainz series membership for a release group.
+
+        Returns None when MusicBrainz is unavailable, on any network error,
+        or when this release group belongs to no series.
+        """
+        musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
+        if musicbrainz is None:
+            return None
+        with contextlib.suppress(*_MUSICBRAINZ_LOOKUP_ERRORS):
+            return await musicbrainz.get_release_group_series_info(release_group_id)
+        return None
 
     async def resolve_musicbrainz_release_group(
         self, release_group_id: str, allow_update_metadata: bool = True

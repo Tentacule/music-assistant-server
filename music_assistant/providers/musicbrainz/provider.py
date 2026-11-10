@@ -57,6 +57,7 @@ from .constants import (
     URL_RELATION_TYPE_MAPPING,
 )
 from .models import (
+    AlbumReleaseGroupSeriesInfo,
     AlbumVersionEnrichment,
     MusicBrainzArtist,
     MusicBrainzArtistCredit,
@@ -539,6 +540,34 @@ class MusicbrainzProvider(MetadataProvider):
                 track_count_per_disc=track_count_per_disc,
                 release_group_id=release.release_group.id if release.release_group else None,
             )
+        return None
+
+    async def get_release_group_series_info(
+        self, release_group_id: str
+    ) -> AlbumReleaseGroupSeriesInfo | None:
+        """Return MusicBrainz series membership for a release group.
+
+        Uses get_data() (30-day cache), so there is no extra network cost after the first
+        fetch.  Returns None when the release group belongs to no series or on any error.
+        """
+        with suppress(InvalidDataError):
+            result = await self._api_client.get_data(
+                f"release-group/{release_group_id}?inc=series-rels"
+            )
+            if not result:
+                return None
+            for rel in result.get("relations", []):
+                if rel.get("type") != "part of":
+                    continue
+                series = rel.get("series", {})
+                if "Release group" not in series.get("type", ""):
+                    continue
+                return AlbumReleaseGroupSeriesInfo(
+                    release_group_id=release_group_id,
+                    series_id=series.get("id", ""),
+                    series_name=series.get("name", ""),
+                    order_number=rel.get("attribute-values", {}).get("number") or None,
+                )
         return None
 
     async def get_releases_by_barcode(self, barcode: str) -> list[MusicBrainzBarcodeRelease]:

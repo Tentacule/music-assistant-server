@@ -292,3 +292,13 @@ class AlbumVersionEnrichment:
     label_names: list[str]
     track_count_per_disc: list[int]
     release_group_id: str | None = None
+
+
+@dataclass
+class AlbumReleaseGroupSeriesInfo:
+    """MusicBrainz series membership for one release group."""
+
+    release_group_id: str
+    series_id: str
+    series_name: str
+    order_number: str | None = None  # ex: "1", "3", "2a"
