@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 #
 # Two build modes (selected by build-docker.ps1):
 #
@@ -12,6 +11,7 @@
 # expensive requirements_all.txt download is never repeated.
 
 ARG BASE_IMAGE_VERSION=latest
+ARG DEPS_IMAGE=tentacule/music-assistant:deps
 FROM --platform=$BUILDPLATFORM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION AS cliairplay-download
 
 # Bump the version and checksum-manifest hash together.

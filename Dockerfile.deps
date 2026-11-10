@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # Deps base image — build once, reuse on every dev build.
 #
 # Contains: apt build tools, uv, Python venv with requirements_all.txt, PyAV.
