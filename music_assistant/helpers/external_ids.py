@@ -58,7 +58,7 @@ def normalize_external_ids(
     return {
         (external_id_type, normalize_external_id(external_id_type, value))
         for external_id_type, value in external_ids
-        if value.strip()
+        if value is not None and value.strip()
     }
 
 
