@@ -126,6 +126,23 @@ class _BaseTracksMemo:
     tracks: list[Track] | None = None
 
 
+_SERIES_COUNT_SQL: Final = "COALESCE(json_array_length(albums.metadata, '$.collections'), 0)"
+
+
+def _series_filter_clause(series_filter: str | None) -> str | None:
+    """
+    Return the WHERE clause that keeps the albums matching a series filter.
+
+    :param series_filter: "albums" keeps the albums in no series, "series" those in at
+        least one, anything else keeps every album (None).
+    """
+    if series_filter == "albums":
+        return f"{_SERIES_COUNT_SQL} = 0"
+    if series_filter == "series":
+        return f"{_SERIES_COUNT_SQL} > 0"
+    return None
+
+
 class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
     """Controller managing MediaItems of type Album."""
 
@@ -242,6 +259,7 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
             sort_direction: SortDirection | None = None,
             summary: bool = True,
             collapse_collections: Literal[False] = False,
+            series_filter: str = "all",
             reachable_via: list[str] | None = None,
             random_seed: int | None = None,
             **kwargs: Any,
@@ -264,6 +282,7 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
             sort_direction: SortDirection | None = None,
             summary: bool = True,
             collapse_collections: Literal[True],
+            series_filter: str = "all",
             reachable_via: list[str] | None = None,
             random_seed: int | None = None,
             **kwargs: Any,
@@ -286,6 +305,7 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
             sort_direction: SortDirection | None = None,
             summary: bool = True,
             collapse_collections: bool,
+            series_filter: str = "all",
             reachable_via: list[str] | None = None,
             random_seed: int | None = None,
             **kwargs: Any,
@@ -307,6 +327,7 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
         sort_direction: SortDirection | None = None,
         summary: bool = True,
         collapse_collections: bool = False,
+        series_filter: str = "all",
         reachable_via: list[str] | None = None,
         random_seed: int | None = None,
         **kwargs: Any,
@@ -330,6 +351,8 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
             fields needed for a list view. Set to False to get fully hydrated items.
         :param collapse_collections: Return the albums of a series (collection) as one
             MediaCollection instead of individually.
+        :param series_filter: "all" (default) returns every album, "albums" only the
+            albums that are part of no series and "series" only those that are.
         :param reachable_via: Restrict results to items with a provider mapping reachable
             through one of these provider instance ids (OR semantics). See
             `MediaControllerBase.library_items` for the full semantics.
@@ -345,6 +368,8 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
         if album_types:
             extra_query_parts.append("albums.album_type IN :album_types")
             extra_query_params["album_types"] = [x.value for x in album_types]
+        if series_clause := _series_filter_clause(series_filter):
+            extra_query_parts.append(series_clause)
         if field == SortField.ARTIST_NAME:
             extra_join_parts.append(
                 "JOIN album_artists ON album_artists.album_id = albums.item_id "
