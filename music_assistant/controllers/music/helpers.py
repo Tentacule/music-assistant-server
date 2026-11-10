@@ -378,3 +378,20 @@ def fill_track_from_recording(track: Track, recording: MusicBrainzRecording) -> 
         if is_valid_isrc(isrc):
             track.add_external_id(ExternalID.ISRC, isrc)
     return track.external_ids != known_ids
+
+
+_SERIES_COUNT_SQL = "COALESCE(json_array_length(albums.metadata, '$.collections'), 0)"
+
+
+def series_filter_clause(series_filter: str | None) -> str | None:
+    """
+    Return the WHERE clause that keeps the albums matching a series filter.
+
+    :param series_filter: "albums" keeps the albums in no series, "series" those in at
+        least one, anything else keeps every album (None).
+    """
+    if series_filter == "albums":
+        return f"{_SERIES_COUNT_SQL} = 0"
+    if series_filter == "series":
+        return f"{_SERIES_COUNT_SQL} > 0"
+    return None

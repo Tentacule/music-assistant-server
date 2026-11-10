@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from music_assistant_models.enums import ExternalID
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.media_items import MediaCollection
 
 from music_assistant.constants import DB_TABLE_ALBUMS, DB_TABLE_SETTINGS
 from music_assistant.controllers.music.custom_migrations import (
@@ -15,6 +16,7 @@ from music_assistant.controllers.music.custom_migrations import (
     DB_TABLE_ALBUM_GROUP_DEFAULTS,
     migrate_custom_schema,
 )
+from music_assistant.helpers.json import json_dumps
 
 from .helpers import create_album
 
@@ -228,6 +230,36 @@ async def test_artist_albums_collapse_library_versions(music_mass: MusicAssistan
     albums = await music_mass.music.albums.album_group_artist_albums(artist_id, "library")
 
     assert sorted(item.name for item in albums) == ["Alpha Standard", "Beta"]
+
+
+async def test_artist_albums_group_and_filter_series(music_mass: MusicAssistant) -> None:
+    """The albums of an artist can be narrowed to (no) series and grouped per series."""
+    second = await _add_album(music_mass, "s2", "Saga Two", None, 100)
+    first = await _add_album(music_mass, "s1", "Saga One", None, 100)
+    await _add_album(music_mass, "x1", "Standalone", None, 100)
+    for album, sequence in ((first, 1), (second, 2)):
+        await music_mass.music.database.update(
+            DB_TABLE_ALBUMS,
+            {"item_id": int(album.item_id)},
+            {"metadata": json_dumps({"collections": [{"title": "Saga", "sequence": sequence}]})},
+        )
+    artist_id = first.artists[0].item_id
+    albums = music_mass.music.albums
+
+    only_series = await albums.album_group_artist_albums(
+        artist_id, "library", series_filter="series"
+    )
+    assert sorted(item.name for item in only_series) == ["Saga One", "Saga Two"]
+    no_series = await albums.album_group_artist_albums(artist_id, "library", series_filter="albums")
+    assert [item.name for item in no_series] == ["Standalone"]
+
+    grouped = await albums.album_group_artist_albums(
+        artist_id, "library", collapse_collections=True
+    )
+    assert sorted(item.name for item in grouped) == ["Saga", "Standalone"]
+    saga = next(item for item in grouped if isinstance(item, MediaCollection))
+    assert saga.item_id == "album___Saga"
+    assert [item.name for item in saga.items] == ["Saga One", "Saga Two"]
 
 
 async def test_custom_migration_is_idempotent(music_mass: MusicAssistant) -> None:

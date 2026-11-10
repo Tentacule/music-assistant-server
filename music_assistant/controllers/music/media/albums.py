@@ -47,6 +47,7 @@ from music_assistant.controllers.music.helpers import (
     provider_mappings_for_update,
     provider_mappings_from_urls,
     search_name_match_clause,
+    series_filter_clause,
 )
 from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
 from music_assistant.controllers.music.listing_cache import Listing, cached_listing
@@ -124,23 +125,6 @@ class _BaseTracksMemo:
 
     resolved: bool = False
     tracks: list[Track] | None = None
-
-
-_SERIES_COUNT_SQL: Final = "COALESCE(json_array_length(albums.metadata, '$.collections'), 0)"
-
-
-def _series_filter_clause(series_filter: str | None) -> str | None:
-    """
-    Return the WHERE clause that keeps the albums matching a series filter.
-
-    :param series_filter: "albums" keeps the albums in no series, "series" those in at
-        least one, anything else keeps every album (None).
-    """
-    if series_filter == "albums":
-        return f"{_SERIES_COUNT_SQL} = 0"
-    if series_filter == "series":
-        return f"{_SERIES_COUNT_SQL} > 0"
-    return None
 
 
 class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
@@ -368,7 +352,7 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
         if album_types:
             extra_query_parts.append("albums.album_type IN :album_types")
             extra_query_params["album_types"] = [x.value for x in album_types]
-        if series_clause := _series_filter_clause(series_filter):
+        if series_clause := series_filter_clause(series_filter):
             extra_query_parts.append(series_clause)
         if field == SortField.ARTIST_NAME:
             extra_join_parts.append(

@@ -522,7 +522,8 @@ class MusicbrainzProvider(MetadataProvider):
         raise InvalidDataError(msg)
 
     async def get_version_enrichment(self, mb_release_id: str) -> AlbumVersionEnrichment | None:
-        """Return catalog number, label and per-disc track counts for a MB release.
+        """
+        Return catalog number, label and per-disc track counts for a MB release.
 
         Uses the already-cached get_release_details call (30-day cache), so there is no
         extra network cost after the first fetch.  Returns None on network error or unknown MBID.
@@ -552,7 +553,8 @@ class MusicbrainzProvider(MetadataProvider):
     async def get_release_group_series_info(
         self, release_group_id: str
     ) -> AlbumReleaseGroupSeriesInfo | None:
-        """Return MusicBrainz series membership for a release group.
+        """
+        Return MusicBrainz series membership for a release group.
 
         Uses get_data() (30-day cache), so there is no extra network cost after the first
         fetch.  Returns None when the release group belongs to no series or on any error.

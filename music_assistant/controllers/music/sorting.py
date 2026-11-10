@@ -205,6 +205,15 @@ LISTING_SORT_OPTIONS: Final[dict[ListingType, tuple[SortOptionInfo, ...]]] = {
     # the contents of a genre are library listings narrowed to the genre
     ListingType.GENRE_TRACKS: _LIBRARY_LISTING_SORT_OPTIONS[ListingType.LIBRARY_TRACKS],
     ListingType.GENRE_ALBUMS: _LIBRARY_LISTING_SORT_OPTIONS[ListingType.LIBRARY_ALBUMS],
+    # the order of the series
+    ListingType.ALBUM_SERIES: _sort_options(
+        SortField.ORIGINAL,
+        SortField.NAME,
+        SortField.SORT_NAME,
+        SortField.YEAR,
+        SortField.ARTIST_NAME,
+        SortField.TIMESTAMP_ADDED,
+    ),
     # the order of the folder
     ListingType.BROWSE: _sort_options(SortField.ORIGINAL, SortField.NAME),
 }

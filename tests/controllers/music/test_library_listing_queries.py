@@ -832,6 +832,17 @@ async def test_album_series_filter_and_collapse(
     assert isinstance(saga, MediaCollection)
     collection = await controller.get_collection(saga.item_id)
     assert [item.name for item in collection.items] == ["Saga 1", "Saga 2", "Crossover"]
+    grouped = await controller.album_group_items(
+        sort_field=SortField.NAME, collapse_collections=True, series_filter="series"
+    )
+    assert [item.name for item in grouped] == ["Other", "Saga"]
+    grouped_search = await controller.album_group_items(search="Saga", collapse_collections=True)
+    assert "Saga" in [item.name for item in grouped_search]
+
+    by_name = await controller.get_collection(
+        saga.item_id, sort_field=SortField.NAME, sort_direction=SortDirection.DESC
+    )
+    assert [item.name for item in by_name.items] == ["Saga 2", "Saga 1", "Crossover"]
 
 
 async def test_artist_audiobooks_collapse_collections(

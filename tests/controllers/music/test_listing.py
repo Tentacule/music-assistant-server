@@ -63,6 +63,7 @@ LISTING_ITEM_TYPES: dict[ListingType, type[MediaItem | BrowseFolder]] = {
     ListingType.PODCAST_EPISODES: PodcastEpisode,
     ListingType.GENRE_TRACKS: Track,
     ListingType.GENRE_ALBUMS: Album,
+    ListingType.ALBUM_SERIES: Album,
     ListingType.BROWSE: BrowseFolder,
 }
 # the item attribute each in-memory sort field reads
