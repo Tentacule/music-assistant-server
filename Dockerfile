@@ -49,7 +49,6 @@ COPY --from=cliairplay-download /cliairplay /cliairplay
 # When DEPS_IMAGE is the official MA image all system deps and cliairplay are
 # already there; when it is our local deps image only the Python deps are.
 ##############################################################################
-ARG DEPS_IMAGE=tentacule/music-assistant:deps
 FROM $DEPS_IMAGE AS builder
 ARG TARGETARCH
 

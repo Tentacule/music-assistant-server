@@ -24,8 +24,11 @@ ENV URLLIB3_NO_OVERRIDE=1
 
 COPY requirements_all.txt .
 
-RUN uv venv $VIRTUAL_ENV && \
-    uv pip install \
+# The cache mount keeps downloaded and compiled packages across rebuilds,
+# so bumping one dependency doesn't fetch all of them again.
+RUN --mount=type=cache,id=ma-uv-cache,target=/root/.cache/uv \
+    uv venv $VIRTUAL_ENV && \
+    UV_LINK_MODE=copy uv pip install \
         --index-strategy unsafe-best-match \
         --no-binary urllib3-future \
         -r requirements_all.txt

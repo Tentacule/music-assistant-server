@@ -46,6 +46,7 @@ from music_assistant.constants import (
     VACUUM_MIN_RECLAIM_RATIO,
 )
 from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
+from music_assistant.controllers.music.custom_migrations import migrate_custom_schema
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.controllers.music.migrations import (
     migrate_database,
@@ -242,6 +243,7 @@ class MusicDatabaseSetupMixin:
             DB_TABLE_SETTINGS,
             {"key": "version", "value": str(DB_SCHEMA_VERSION), "type": "str"},
         )
+        await migrate_custom_schema(self._database, self.logger)
         # create indexes and triggers if needed
         await self.__create_database_indexes()
         await self.__create_database_triggers()
