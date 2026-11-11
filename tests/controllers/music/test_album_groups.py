@@ -364,6 +364,27 @@ async def test_a_series_found_later_reaches_every_version(music_mass: MusicAssis
     assert await _series_titles(music_mass, standard) == [("Saga", 3)]
 
 
+async def test_a_provider_version_shows_the_series_of_its_group(
+    music_mass: MusicAssistant,
+) -> None:
+    """A version that is not in the library takes the series of its library versions."""
+    standard = await _add_album(music_mass, "a1", "Alpha Standard", GROUP_A, 100)
+    await _set_series(music_mass, standard, "Saga", 1)
+    provider_version = create_album(
+        "tidal_1",
+        "t1",
+        name="Alpha Remaster",
+        external_ids={(ExternalID.MB_RELEASEGROUP, GROUP_A)},
+    )
+    unrelated = create_album("tidal_1", "t2", name="Beta")
+
+    await music_mass.music.albums._add_release_group_series(provider_version)
+    await music_mass.music.albums._add_release_group_series(unrelated)
+
+    assert [entry.title for entry in provider_version.metadata.collections or []] == ["Saga"]
+    assert not unrelated.metadata.collections
+
+
 async def test_migration_shares_the_series_of_a_group(music_mass: MusicAssistant) -> None:
     """The custom step shares the series that one version of a group already has."""
     standard = await _add_album(music_mass, "a1", "Alpha Standard", GROUP_A, 100)

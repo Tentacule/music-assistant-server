@@ -39,6 +39,7 @@ from music_assistant.controllers.music.listing import apply_listing, resolve_lis
 from music_assistant.helpers.collections import (
     get_collection_item_id,
     get_collection_name_from_item_id,
+    merge_item_collections,
     share_collections,
 )
 from music_assistant.helpers.external_ids import barcode_to_upc, is_valid_barcode
@@ -671,6 +672,33 @@ class AlbumGroupsMixin(_Base):
             or int(album.item_id) not in group_of_item
             or int(album.item_id) in winners
         ]
+
+    async def _add_release_group_series(self, album: Album) -> None:
+        """
+        Add to an album that is not in the library the series of its library versions.
+
+        :param album: A provider album, as shown on its page.
+        """
+        if album.provider == "library":
+            return
+        if not (release_group_id := await self._resolve_release_group(album, _BarcodeBudget())):
+            return
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT json_extract({DB_TABLE_ALBUMS}.metadata, '$.collections') AS collections "
+            f"FROM {DB_TABLE_ALBUMS} WHERE {_RELEASE_GROUP_SQL} = :release_group_id",
+            {"release_group_id": release_group_id},
+            limit=0,
+        )
+        collections = album.metadata.collections
+        for row in rows:
+            collections = merge_item_collections(
+                collections,
+                [
+                    MediaItemCollection.from_dict(entry)
+                    for entry in json_loads(row["collections"] or "[]")
+                ],
+            )
+        album.metadata.collections = collections
 
     async def _share_release_group_series(self, library_id: int) -> None:
         """

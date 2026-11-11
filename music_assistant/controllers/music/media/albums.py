@@ -227,6 +227,8 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
                     )
                 )
         album.artists = album_artists
+        # a version that is not in the library is in the series of its library versions
+        await self._add_release_group_series(album)
         return album
 
     if TYPE_CHECKING:
