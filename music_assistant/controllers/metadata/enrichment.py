@@ -53,6 +53,7 @@ from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.external_ids import is_valid_barcode, is_valid_isrc
 from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.musicbrainz.models import release_year
 from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider, relation_urls
 
 from .constants import (
@@ -1202,6 +1203,11 @@ def _fill_album_from_release(
             album.year = int(date[:4])
     if album.album_type == AlbumType.UNKNOWN and release_group:
         album.album_type = MusicbrainzProvider.album_type_from_release_group(release_group)
+    if release_group and (first_year := release_year(release_group.first_release_date)):
+        # the first release of all editions, kept when an earlier year is already known
+        album.metadata.original_year = min(
+            filter(None, (album.metadata.original_year, first_year))
+        )
 
 
 def _identifying_first[ItemT: Album | Track](items: Sequence[ItemT]) -> list[ItemT]:

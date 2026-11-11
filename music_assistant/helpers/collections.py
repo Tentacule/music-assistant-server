@@ -1,6 +1,6 @@
 """Helpers for collections."""
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from music_assistant_models.enums import MediaType
@@ -51,6 +51,37 @@ def merge_item_collections(
             continue
         merged[collection.title] = collection
     return UniqueList(merged.values())
+
+
+def share_collections[K](
+    collections_by_item: Mapping[K, Iterable[MediaItemCollection] | None],
+) -> dict[K, UniqueList[MediaItemCollection]]:
+    """
+    Give each item the collections of all of them, and return the items that change.
+
+    The versions of one album are in the same series, so a series known for one version
+    holds for every version.
+
+    :param collections_by_item: The collections of each item, by item key.
+    """
+    merged: UniqueList[MediaItemCollection] | None = None
+    for collections in collections_by_item.values():
+        merged = merge_item_collections(merged, collections)
+    if not merged:
+        return {}
+    target = _collection_keys(merged)
+    return {
+        key: UniqueList(merged)
+        for key, collections in collections_by_item.items()
+        if _collection_keys(collections) != target
+    }
+
+
+def _collection_keys(
+    collections: Iterable[MediaItemCollection] | None,
+) -> set[tuple[str, Any]]:
+    """Return the title and sequence of each collection, to compare two lists of them."""
+    return {(collection.title, collection.sequence) for collection in collections or ()}
 
 
 def has_available_item(items: Iterable[MediaItem | MediaCollection[Any]]) -> bool:

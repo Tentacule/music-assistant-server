@@ -57,6 +57,9 @@ _RELEASE_DATE_TAGS = ("originaldate", "tdor", "originalyear", "tory", "date")
 # original release is only a fallback. This is the reverse of the track order above.
 _ALBUM_DATE_TAGS = ("date", "originaldate", "tdor", "originalyear", "tory")
 
+# The tags holding the first release of an album, as opposed to the date of its edition.
+_ORIGINAL_DATE_TAGS = ("originaldate", "tdor", "originalyear", "tory")
+
 # Audiobook tag names in preference order, normalized so any casing/separator matches.
 # ffprobe surfaces these but keeps only the first value, so we read them with mutagen instead.
 _NARRATOR_TAGS = ("narrator", "narratedby")
@@ -502,6 +505,14 @@ class AudioTags:
     def year(self) -> int | None:
         """Return the year the album was released, if present."""
         for tag_name in _ALBUM_DATE_TAGS:
+            if (tag := self.tags.get(tag_name)) and (parsed := _parse_release_date(tag)):
+                return parsed.year
+        return None
+
+    @property
+    def original_year(self) -> int | None:
+        """Return the year the album was first released, from the original date tags."""
+        for tag_name in _ORIGINAL_DATE_TAGS:
             if (tag := self.tags.get(tag_name)) and (parsed := _parse_release_date(tag)):
                 return parsed.year
         return None

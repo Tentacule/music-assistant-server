@@ -8,18 +8,32 @@ table: a library database that gets reset loses it too, and every step then runs
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
-from music_assistant.constants import DB_TABLE_ALBUM_TRACKS, DB_TABLE_SETTINGS
+from music_assistant_models.enums import ExternalID
+
+from music_assistant.constants import (
+    DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_ALBUMS,
+    DB_TABLE_EXTERNAL_ID_LOOKUP,
+    DB_TABLE_SETTINGS,
+)
+from music_assistant.helpers.release_groups import (
+    GROUP_METADATA_COLUMNS,
+    group_versions,
+    shared_group_metadata,
+    write_group_metadata,
+)
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Mapping
 
     from music_assistant.helpers.database import DatabaseConnection
 
 CUSTOM_SCHEMA_VERSION_KEY: Final[str] = "custom_schema_version"
 DB_TABLE_ALBUM_GROUP_DEFAULTS: Final[str] = "album_release_group_defaults"
+DB_TABLE_ALBUM_SERIES_HIDDEN: Final[str] = "album_series_hidden"
 
 
 async def _create_album_group_defaults(database: DatabaseConnection) -> None:
@@ -45,10 +59,42 @@ async def _add_album_track_disc_subtitle(database: DatabaseConnection) -> None:
         )
 
 
+async def _create_album_series_hidden(database: DatabaseConnection) -> None:
+    """Create the table holding the album series hidden from the series list."""
+    await database.execute(
+        f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_SERIES_HIDDEN}(
+                [title] TEXT PRIMARY KEY);"""
+    )
+
+
+async def _share_release_group_metadata(database: DatabaseConnection) -> None:
+    """Give every library version of an album the series and first year of its group."""
+    rows = await database.get_rows_from_query(
+        f"""SELECT {DB_TABLE_ALBUMS}.item_id AS item_id, {GROUP_METADATA_COLUMNS},
+                (SELECT MIN(lookup.external_id) FROM {DB_TABLE_EXTERNAL_ID_LOOKUP} lookup
+                    WHERE lookup.media_type = 'album'
+                    AND lookup.external_id_type = '{ExternalID.MB_RELEASEGROUP.value}'
+                    AND lookup.item_id = {DB_TABLE_ALBUMS}.item_id) AS release_group_id
+            FROM {DB_TABLE_ALBUMS}""",
+        limit=0,
+    )
+    groups: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        if row["release_group_id"]:
+            groups.setdefault(row["release_group_id"], []).append(row)
+    for group_rows in groups.values():
+        if len(group_rows) < 2:
+            continue
+        for item_id, update in shared_group_metadata(group_versions(group_rows)).items():
+            await write_group_metadata(database, item_id, update)
+
+
 # append only: the position of a step is its version number
 _STEPS: Final[tuple[Callable[[DatabaseConnection], Awaitable[None]], ...]] = (
     _create_album_group_defaults,
     _add_album_track_disc_subtitle,
+    _create_album_series_hidden,
+    _share_release_group_metadata,
 )
 
 

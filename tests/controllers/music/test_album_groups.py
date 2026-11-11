@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from music_assistant_models.enums import ExternalID
+from music_assistant_models.enums import ExternalID, SortDirection, SortField
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import MediaCollection
 
@@ -14,6 +14,7 @@ from music_assistant.constants import DB_TABLE_ALBUMS, DB_TABLE_SETTINGS
 from music_assistant.controllers.music.custom_migrations import (
     CUSTOM_SCHEMA_VERSION_KEY,
     DB_TABLE_ALBUM_GROUP_DEFAULTS,
+    DB_TABLE_ALBUM_SERIES_HIDDEN,
     migrate_custom_schema,
 )
 from music_assistant.helpers.json import json_dumps
@@ -262,19 +263,197 @@ async def test_artist_albums_group_and_filter_series(music_mass: MusicAssistant)
     assert [item.name for item in saga.items] == ["Saga One", "Saga Two"]
 
 
+async def _add_series(mass: MusicAssistant, title: str, *names: str) -> None:
+    """
+    Add albums to the library as the albums of one series, in the given order.
+
+    :param mass: The Music Assistant instance.
+    :param title: The title of the series.
+    :param names: The names of the albums of the series.
+    """
+    for sequence, name in enumerate(names, start=1):
+        album = await _add_album(mass, f"{title}-{sequence}", name, None, 100)
+        await mass.music.database.update(
+            DB_TABLE_ALBUMS,
+            {"item_id": int(album.item_id)},
+            {"metadata": json_dumps({"collections": [{"title": title, "sequence": sequence}]})},
+        )
+
+
+async def test_series_list_holds_the_series_only(music_mass_with_cache: MusicAssistant) -> None:
+    """The series list holds one item per series, and no album outside a series."""
+    await _add_series(music_mass_with_cache, "Saga", "Saga One", "Saga Two")
+    await _add_series(music_mass_with_cache, "Cycle", "Cycle One")
+    await _add_album(music_mass_with_cache, "x1", "Standalone", None, 100)
+
+    series = await music_mass_with_cache.music.albums.album_series()
+
+    assert sorted(item.name for item in series) == ["Cycle", "Saga"]
+    saga = next(item for item in series if item.name == "Saga")
+    assert [item.name for item in saga.items] == ["Saga One", "Saga Two"]
+
+
+async def test_hidden_series_leave_the_series_list(music_mass_with_cache: MusicAssistant) -> None:
+    """A hidden series moves to the hidden list, and the album listings keep it."""
+    await _add_series(music_mass_with_cache, "Saga", "Saga One", "Saga Two")
+    await _add_series(music_mass_with_cache, "Cycle", "Cycle One")
+    albums = music_mass_with_cache.music.albums
+
+    await albums.set_album_series_hidden("album___Saga", True)
+
+    assert [item.name for item in await albums.album_series()] == ["Cycle"]
+    assert [item.name for item in await albums.album_series(hidden=True)] == ["Saga"]
+    assert await albums.hidden_album_series() == ["album___Saga"]
+    grouped = await albums.album_group_items(collapse_collections=True)
+    assert sorted(item.name for item in grouped) == ["Cycle", "Saga"]
+
+    await albums.set_album_series_hidden("album___Saga", False)
+
+    assert sorted(item.name for item in await albums.album_series()) == ["Cycle", "Saga"]
+    assert await albums.album_series(hidden=True) == []
+
+
+async def test_series_list_pages(music_mass_with_cache: MusicAssistant) -> None:
+    """The series list pages over the series, not over their albums."""
+    await _add_series(music_mass_with_cache, "Alpha", "Alpha One", "Alpha Two")
+    await _add_series(music_mass_with_cache, "Beta", "Beta One")
+    albums = music_mass_with_cache.music.albums
+
+    first = await albums.album_series(limit=1)
+    second = await albums.album_series(limit=1, offset=1)
+
+    assert len(first) == len(second) == 1
+    assert {first[0].name, second[0].name} == {"Alpha", "Beta"}
+
+
+async def _set_series(mass: MusicAssistant, album: Album, title: str, sequence: int) -> None:
+    """Store a series in the metadata of a library album, as a tag or MusicBrainz would."""
+    await mass.music.database.update(
+        DB_TABLE_ALBUMS,
+        {"item_id": int(album.item_id)},
+        {"metadata": json_dumps({"collections": [{"title": title, "sequence": sequence}]})},
+    )
+
+
+async def _series_titles(mass: MusicAssistant, album: Album) -> list[tuple[str, object]]:
+    """Return the series of a library album, with their sequence."""
+    stored = await mass.music.albums.get_library_item(album.item_id)
+    return [(entry.title, entry.sequence) for entry in stored.metadata.collections or []]
+
+
+async def test_a_new_version_gets_the_series_of_its_group(music_mass: MusicAssistant) -> None:
+    """A version added to the library takes the series of the other versions of its group."""
+    standard = await _add_album(music_mass, "a1", "Alpha Standard", GROUP_A, 100)
+    await _set_series(music_mass, standard, "Saga", 1)
+
+    deluxe = await _add_album(music_mass, "a2", "Alpha Deluxe", GROUP_A, 200)
+    other = await _add_album(music_mass, "b1", "Beta", GROUP_B, 100)
+
+    assert await _series_titles(music_mass, deluxe) == [("Saga", 1)]
+    assert await _series_titles(music_mass, other) == []
+
+
+async def test_a_series_found_later_reaches_every_version(music_mass: MusicAssistant) -> None:
+    """A series that an update brings to one version is shared with the versions it has."""
+    standard = await _add_album(music_mass, "a1", "Alpha Standard", GROUP_A, 100)
+    deluxe = await _add_album(music_mass, "a2", "Alpha Deluxe", GROUP_A, 200)
+    await _set_series(music_mass, deluxe, "Saga", 3)
+
+    await music_mass.music.albums._share_release_group_metadata(int(deluxe.item_id))
+
+    assert await _series_titles(music_mass, standard) == [("Saga", 3)]
+
+
+async def test_a_provider_version_shows_the_series_of_its_group(
+    music_mass: MusicAssistant,
+) -> None:
+    """A version that is not in the library takes the series of its library versions."""
+    standard = await _add_album(music_mass, "a1", "Alpha Standard", GROUP_A, 100)
+    await _set_series(music_mass, standard, "Saga", 1)
+    provider_version = create_album(
+        "tidal_1",
+        "t1",
+        name="Alpha Remaster",
+        external_ids={(ExternalID.MB_RELEASEGROUP, GROUP_A)},
+    )
+    unrelated = create_album("tidal_1", "t2", name="Beta")
+
+    await music_mass.music.albums._add_release_group_metadata(provider_version)
+    await music_mass.music.albums._add_release_group_metadata(unrelated)
+
+    assert [entry.title for entry in provider_version.metadata.collections or []] == ["Saga"]
+    assert not unrelated.metadata.collections
+
+
+async def _set_years(mass: MusicAssistant, album: Album, year: int, original: int | None) -> None:
+    """Store the edition year and the first release year of a library album."""
+    metadata = json_dumps({"original_year": original} if original else {})
+    await mass.music.database.update(
+        DB_TABLE_ALBUMS, {"item_id": int(album.item_id)}, {"year": year, "metadata": metadata}
+    )
+
+
+async def test_versions_share_the_earliest_original_year(music_mass: MusicAssistant) -> None:
+    """Every version of a group gets the earliest first release year one of them knows."""
+    standard = await _add_album(music_mass, "a1", "Alpha Standard", GROUP_A, 100)
+    deluxe = await _add_album(music_mass, "a2", "Alpha Deluxe", GROUP_A, 200)
+    await _set_years(music_mass, standard, 1973, 1973)
+    await _set_years(music_mass, deluxe, 2011, None)
+
+    await music_mass.music.albums._share_release_group_metadata(int(deluxe.item_id))
+
+    stored = await music_mass.music.albums.get_library_item(deluxe.item_id)
+    assert (stored.year, stored.metadata.original_year) == (2011, 1973)
+
+
+async def test_listing_carries_and_sorts_on_the_original_year(
+    music_mass: MusicAssistant,
+) -> None:
+    """A summary listing carries the first release year, and the year sort uses it."""
+    reissue = await _add_album(music_mass, "a1", "Alpha Reissue", GROUP_A, 100)
+    beta = await _add_album(music_mass, "b1", "Beta", GROUP_B, 100)
+    await _set_years(music_mass, reissue, 2011, 1970)
+    await _set_years(music_mass, beta, 1990, None)
+
+    listed = await music_mass.music.albums.library_items(
+        sort_field=SortField.YEAR, sort_direction=SortDirection.ASC
+    )
+
+    assert [item.name for item in listed] == ["Alpha Reissue", "Beta"]
+    assert listed[0].metadata.original_year == 1970
+    assert listed[0].year == 2011
+
+
+async def test_migration_shares_the_series_of_a_group(music_mass: MusicAssistant) -> None:
+    """The custom step shares the series that one version of a group already has."""
+    standard = await _add_album(music_mass, "a1", "Alpha Standard", GROUP_A, 100)
+    deluxe = await _add_album(music_mass, "a2", "Alpha Deluxe", GROUP_A, 200)
+    await _set_series(music_mass, standard, "Saga", 1)
+    database = music_mass.music.database
+    await database.insert_or_replace(
+        DB_TABLE_SETTINGS, {"key": CUSTOM_SCHEMA_VERSION_KEY, "value": "3", "type": "str"}
+    )
+
+    await migrate_custom_schema(database, Mock())
+
+    assert await _series_titles(music_mass, deluxe) == [("Saga", 1)]
+
+
 async def test_custom_migration_is_idempotent(music_mass: MusicAssistant) -> None:
-    """The custom steps ran at setup, and running them again keeps the stored default."""
+    """The custom steps ran at setup, and running them again keeps the stored rows."""
     database = music_mass.music.database
     row = await database.get_row(DB_TABLE_SETTINGS, {"key": CUSTOM_SCHEMA_VERSION_KEY})
     assert row is not None
     await database.insert_or_replace(
         DB_TABLE_ALBUM_GROUP_DEFAULTS, {"release_group_id": GROUP_A, "album_id": 1}
     )
+    await database.insert_or_replace(DB_TABLE_ALBUM_SERIES_HIDDEN, {"title": "Saga"})
     await database.delete(DB_TABLE_SETTINGS, {"key": CUSTOM_SCHEMA_VERSION_KEY})
 
     await migrate_custom_schema(database, Mock())
 
     assert await database.get_row(DB_TABLE_ALBUM_GROUP_DEFAULTS, {"release_group_id": GROUP_A})
+    assert await database.get_row(DB_TABLE_ALBUM_SERIES_HIDDEN, {"title": "Saga"})
     assert await database.get_row(DB_TABLE_SETTINGS, {"key": CUSTOM_SCHEMA_VERSION_KEY})
 
 
