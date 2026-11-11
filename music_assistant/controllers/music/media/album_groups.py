@@ -39,9 +39,10 @@ from music_assistant.controllers.music.listing import apply_listing, resolve_lis
 from music_assistant.helpers.collections import (
     get_collection_item_id,
     get_collection_name_from_item_id,
+    share_collections,
 )
 from music_assistant.helpers.external_ids import barcode_to_upc, is_valid_barcode
-from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
 
 from .base import MediaControllerBase
@@ -670,6 +671,50 @@ class AlbumGroupsMixin(_Base):
             or int(album.item_id) not in group_of_item
             or int(album.item_id) in winners
         ]
+
+    async def _share_release_group_series(self, library_id: int) -> None:
+        """
+        Give every library version of an album the series of all its versions.
+
+        A series is one of the release group, so a series known for one version holds for
+        the others, which may come from a provider that does not know it.
+
+        :param library_id: The library id of the album that was added or updated.
+        """
+        if not (release_group_id := await self._library_release_group(library_id)):
+            return
+        database = self.mass.music.database
+        rows = await database.get_rows_from_query(
+            f"SELECT {DB_TABLE_ALBUMS}.item_id AS item_id, "
+            f"json_extract({DB_TABLE_ALBUMS}.metadata, '$.collections') AS collections "
+            f"FROM {DB_TABLE_ALBUMS} WHERE {_RELEASE_GROUP_SQL} = :release_group_id",
+            {"release_group_id": release_group_id},
+            limit=0,
+        )
+        if len(rows) < 2:
+            return
+        changes = share_collections(
+            {
+                int(row["item_id"]): [
+                    MediaItemCollection.from_dict(entry)
+                    for entry in json_loads(row["collections"] or "[]")
+                ]
+                for row in rows
+            }
+        )
+        for item_id, collections in changes.items():
+            await database.execute_write(
+                f"UPDATE {DB_TABLE_ALBUMS} SET metadata = "
+                "json_set(metadata, '$.collections', json(:collections)) "
+                "WHERE item_id = :item_id",
+                {
+                    "collections": json_dumps([entry.to_dict() for entry in collections]),
+                    "item_id": item_id,
+                },
+            )
+            if item_id != library_id:
+                album = await self.get_library_item(item_id)
+                self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, album.uri, album)
 
     async def _library_release_group(self, library_id: int) -> str | None:
         """Return the stored release group of a library album."""

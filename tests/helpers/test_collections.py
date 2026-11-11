@@ -13,7 +13,11 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.helpers.collections import has_available_item, merge_item_collections
+from music_assistant.helpers.collections import (
+    has_available_item,
+    merge_item_collections,
+    share_collections,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -105,3 +109,17 @@ async def test_merge_item_collections_none() -> None:
     """No collections on either side stays unknown."""
     assert merge_item_collections(None, None) is None
     assert merge_item_collections(None, []) == []
+
+
+async def test_share_collections_gives_every_item_the_series_of_all() -> None:
+    """A series known for one item reaches the others, and an item that has it stays."""
+    saga = MediaItemCollection(title="Saga", sequence=2)
+    changes = share_collections({1: [saga], 2: None, 3: [MediaItemCollection(title="Saga")]})
+
+    assert set(changes) == {2, 3}
+    assert [(entry.title, entry.sequence) for entry in changes[2]] == [("Saga", 2)]
+
+
+async def test_share_collections_without_series_changes_nothing() -> None:
+    """Items without any series stay as they are."""
+    assert share_collections({1: None, 2: []}) == {}

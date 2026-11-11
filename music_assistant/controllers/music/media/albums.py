@@ -1038,6 +1038,8 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
         # set track artist(s)
         await self._set_album_artists(db_id, item.artists)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
+        # a new version shares the series of the versions in the library, and gives them its own
+        await self._share_release_group_series(db_id)
         return db_id
 
     async def _update_library_item(
@@ -1099,6 +1101,7 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
         artists = update.artists if overwrite else cur_item.artists + update.artists
         await self._set_album_artists(db_id, artists, overwrite=overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
+        await self._share_release_group_series(db_id)
 
     async def _get_provider_album_tracks(
         self, item_id: str, provider_instance_id_or_domain: str

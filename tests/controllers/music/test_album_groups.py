@@ -326,6 +326,59 @@ async def test_series_list_pages(music_mass_with_cache: MusicAssistant) -> None:
     assert {first[0].name, second[0].name} == {"Alpha", "Beta"}
 
 
+async def _set_series(mass: MusicAssistant, album: Album, title: str, sequence: int) -> None:
+    """Store a series in the metadata of a library album, as a tag or MusicBrainz would."""
+    await mass.music.database.update(
+        DB_TABLE_ALBUMS,
+        {"item_id": int(album.item_id)},
+        {"metadata": json_dumps({"collections": [{"title": title, "sequence": sequence}]})},
+    )
+
+
+async def _series_titles(mass: MusicAssistant, album: Album) -> list[tuple[str, object]]:
+    """Return the series of a library album, with their sequence."""
+    stored = await mass.music.albums.get_library_item(album.item_id)
+    return [(entry.title, entry.sequence) for entry in stored.metadata.collections or []]
+
+
+async def test_a_new_version_gets_the_series_of_its_group(music_mass: MusicAssistant) -> None:
+    """A version added to the library takes the series of the other versions of its group."""
+    standard = await _add_album(music_mass, "a1", "Alpha Standard", GROUP_A, 100)
+    await _set_series(music_mass, standard, "Saga", 1)
+
+    deluxe = await _add_album(music_mass, "a2", "Alpha Deluxe", GROUP_A, 200)
+    other = await _add_album(music_mass, "b1", "Beta", GROUP_B, 100)
+
+    assert await _series_titles(music_mass, deluxe) == [("Saga", 1)]
+    assert await _series_titles(music_mass, other) == []
+
+
+async def test_a_series_found_later_reaches_every_version(music_mass: MusicAssistant) -> None:
+    """A series that an update brings to one version is shared with the versions it has."""
+    standard = await _add_album(music_mass, "a1", "Alpha Standard", GROUP_A, 100)
+    deluxe = await _add_album(music_mass, "a2", "Alpha Deluxe", GROUP_A, 200)
+    await _set_series(music_mass, deluxe, "Saga", 3)
+
+    await music_mass.music.albums._share_release_group_series(int(deluxe.item_id))
+
+    assert await _series_titles(music_mass, standard) == [("Saga", 3)]
+
+
+async def test_migration_shares_the_series_of_a_group(music_mass: MusicAssistant) -> None:
+    """The custom step shares the series that one version of a group already has."""
+    standard = await _add_album(music_mass, "a1", "Alpha Standard", GROUP_A, 100)
+    deluxe = await _add_album(music_mass, "a2", "Alpha Deluxe", GROUP_A, 200)
+    await _set_series(music_mass, standard, "Saga", 1)
+    database = music_mass.music.database
+    await database.insert_or_replace(
+        DB_TABLE_SETTINGS, {"key": CUSTOM_SCHEMA_VERSION_KEY, "value": "3", "type": "str"}
+    )
+
+    await migrate_custom_schema(database, Mock())
+
+    assert await _series_titles(music_mass, deluxe) == [("Saga", 1)]
+
+
 async def test_custom_migration_is_idempotent(music_mass: MusicAssistant) -> None:
     """The custom steps ran at setup, and running them again keeps the stored rows."""
     database = music_mass.music.database
