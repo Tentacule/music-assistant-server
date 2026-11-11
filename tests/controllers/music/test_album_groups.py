@@ -303,6 +303,7 @@ async def test_hidden_series_leave_the_series_list(music_mass_with_cache: MusicA
 
     assert [item.name for item in await albums.album_series()] == ["Cycle"]
     assert [item.name for item in await albums.album_series(hidden=True)] == ["Saga"]
+    assert await albums.hidden_album_series() == ["album___Saga"]
     grouped = await albums.album_group_items(collapse_collections=True)
     assert sorted(item.name for item in grouped) == ["Cycle", "Saga"]
 

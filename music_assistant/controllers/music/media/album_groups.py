@@ -108,6 +108,7 @@ class AlbumGroupsMixin(_Base):
             ("info", self.album_group_info, Scope.LIBRARY_READ),
             ("set_default", self.set_album_group_default, Scope.LIBRARY_WRITE),
             ("series", self.album_series, Scope.LIBRARY_READ),
+            ("hidden_series", self.hidden_album_series, Scope.LIBRARY_READ),
             ("set_series_hidden", self.set_album_series_hidden, Scope.LIBRARY_WRITE),
         ):
             self.mass.register_api_command(f"{_API_BASE}/{name}", handler, required_scope=scope)
@@ -559,6 +560,13 @@ class AlbumGroupsMixin(_Base):
             await database.insert_or_replace(DB_TABLE_ALBUM_SERIES_HIDDEN, {"title": title})
         else:
             await database.delete(DB_TABLE_ALBUM_SERIES_HIDDEN, {"title": title})
+
+    async def hidden_album_series(self) -> list[str]:
+        """Return the item ids of the hidden album series."""
+        return sorted(
+            get_collection_item_id(title, MediaType.ALBUM)
+            for title in await self._hidden_series_titles()
+        )
 
     async def _hidden_series_titles(self) -> set[str]:
         """Return the titles of the hidden album series."""
