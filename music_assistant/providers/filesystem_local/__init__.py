@@ -4000,6 +4000,7 @@ class LocalFileSystemProvider(MusicProvider):
             album.add_external_id(ExternalID.MB_RELEASEGROUP, releasegroup_mbid)
         if track_tags.year:
             album.year = track_tags.year
+        album.metadata.original_year = track_tags.original_year
         album.album_type = track_tags.album_type
         if series := track_tags.series:
             # e.g. a compilation series, which groups the albums together in the library

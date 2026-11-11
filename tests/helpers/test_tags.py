@@ -1650,3 +1650,20 @@ def _create_mp3_with_cover(tmp_path: pathlib.Path, track_path: str) -> None:
         check=True,
         capture_output=True,
     )
+
+
+@pytest.mark.parametrize(
+    ("raw_tags", "expected"),
+    [
+        ({"originaldate": "1978-06-01", "date": "2015-03-07"}, 1978),
+        ({"tdor": "1978", "date": "2015"}, 1978),
+        ({"originalyear": "1977"}, 1977),
+        ({"tory": "1976"}, 1976),
+        # the date of the edition is not the first release
+        ({"date": "2015-03-07"}, None),
+        ({}, None),
+    ],
+)
+def test_original_year(raw_tags: dict[str, str], expected: int | None) -> None:
+    """The first release year comes from the original date tags only."""
+    assert _tags_with(raw_tags).original_year == expected

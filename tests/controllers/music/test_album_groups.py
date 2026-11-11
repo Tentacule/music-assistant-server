@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from music_assistant_models.enums import ExternalID
+from music_assistant_models.enums import ExternalID, SortDirection, SortField
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import MediaCollection
 
@@ -359,7 +359,7 @@ async def test_a_series_found_later_reaches_every_version(music_mass: MusicAssis
     deluxe = await _add_album(music_mass, "a2", "Alpha Deluxe", GROUP_A, 200)
     await _set_series(music_mass, deluxe, "Saga", 3)
 
-    await music_mass.music.albums._share_release_group_series(int(deluxe.item_id))
+    await music_mass.music.albums._share_release_group_metadata(int(deluxe.item_id))
 
     assert await _series_titles(music_mass, standard) == [("Saga", 3)]
 
@@ -378,11 +378,50 @@ async def test_a_provider_version_shows_the_series_of_its_group(
     )
     unrelated = create_album("tidal_1", "t2", name="Beta")
 
-    await music_mass.music.albums._add_release_group_series(provider_version)
-    await music_mass.music.albums._add_release_group_series(unrelated)
+    await music_mass.music.albums._add_release_group_metadata(provider_version)
+    await music_mass.music.albums._add_release_group_metadata(unrelated)
 
     assert [entry.title for entry in provider_version.metadata.collections or []] == ["Saga"]
     assert not unrelated.metadata.collections
+
+
+async def _set_years(mass: MusicAssistant, album: Album, year: int, original: int | None) -> None:
+    """Store the edition year and the first release year of a library album."""
+    metadata = json_dumps({"original_year": original} if original else {})
+    await mass.music.database.update(
+        DB_TABLE_ALBUMS, {"item_id": int(album.item_id)}, {"year": year, "metadata": metadata}
+    )
+
+
+async def test_versions_share_the_earliest_original_year(music_mass: MusicAssistant) -> None:
+    """Every version of a group gets the earliest first release year one of them knows."""
+    standard = await _add_album(music_mass, "a1", "Alpha Standard", GROUP_A, 100)
+    deluxe = await _add_album(music_mass, "a2", "Alpha Deluxe", GROUP_A, 200)
+    await _set_years(music_mass, standard, 1973, 1973)
+    await _set_years(music_mass, deluxe, 2011, None)
+
+    await music_mass.music.albums._share_release_group_metadata(int(deluxe.item_id))
+
+    stored = await music_mass.music.albums.get_library_item(deluxe.item_id)
+    assert (stored.year, stored.metadata.original_year) == (2011, 1973)
+
+
+async def test_listing_carries_and_sorts_on_the_original_year(
+    music_mass: MusicAssistant,
+) -> None:
+    """A summary listing carries the first release year, and the year sort uses it."""
+    reissue = await _add_album(music_mass, "a1", "Alpha Reissue", GROUP_A, 100)
+    beta = await _add_album(music_mass, "b1", "Beta", GROUP_B, 100)
+    await _set_years(music_mass, reissue, 2011, 1970)
+    await _set_years(music_mass, beta, 1990, None)
+
+    listed = await music_mass.music.albums.library_items(
+        sort_field=SortField.YEAR, sort_direction=SortDirection.ASC
+    )
+
+    assert [item.name for item in listed] == ["Alpha Reissue", "Beta"]
+    assert listed[0].metadata.original_year == 1970
+    assert listed[0].year == 2011
 
 
 async def test_migration_shares_the_series_of_a_group(music_mass: MusicAssistant) -> None:

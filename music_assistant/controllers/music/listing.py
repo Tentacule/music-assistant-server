@@ -197,6 +197,12 @@ def _track_number(item: ListingItem) -> tuple[int, int]:
     return (getattr(item, "disc_number", 0) or 1, getattr(item, "track_number", 0) or 0)
 
 
+def _year(item: ListingItem) -> int:
+    """Return the year an item sorts on: the first release of an album, else its own year."""
+    metadata = getattr(item, "metadata", None)
+    return getattr(metadata, "original_year", None) or getattr(item, "year", 0) or 0
+
+
 # the sort key of every field an item carries itself; ORIGINAL and RANDOM need none
 _SORT_KEYS: Final[dict[SortField, Callable[[ListingItem], Any]]] = {
     SortField.NAME: lambda item: _normalize(_name(item)),
@@ -204,7 +210,7 @@ _SORT_KEYS: Final[dict[SortField, Callable[[ListingItem], Any]]] = {
     SortField.TIMESTAMP_ADDED: _date_added,
     SortField.LAST_PLAYED: lambda item: getattr(item, "last_played", 0) or 0,
     SortField.DURATION: _duration,
-    SortField.YEAR: lambda item: getattr(item, "year", 0) or 0,
+    SortField.YEAR: lambda item: _year(item),
     SortField.RELEASE_DATE: _release_date,
     SortField.POSITION: lambda item: getattr(item, "position", 0) or 0,
     SortField.ARTIST_NAME: _artist_name,

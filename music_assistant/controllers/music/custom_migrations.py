@@ -8,10 +8,9 @@ table: a library database that gets reset loses it too, and every step then runs
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.enums import ExternalID
-from music_assistant_models.media_items import MediaItemCollection
 
 from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
@@ -19,12 +18,16 @@ from music_assistant.constants import (
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_SETTINGS,
 )
-from music_assistant.helpers.collections import share_collections
-from music_assistant.helpers.json import json_dumps, json_loads
+from music_assistant.helpers.release_groups import (
+    GROUP_METADATA_COLUMNS,
+    group_versions,
+    shared_group_metadata,
+    write_group_metadata,
+)
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Mapping
 
     from music_assistant.helpers.database import DatabaseConnection
 
@@ -64,11 +67,10 @@ async def _create_album_series_hidden(database: DatabaseConnection) -> None:
     )
 
 
-async def _share_release_group_series(database: DatabaseConnection) -> None:
-    """Give every library version of an album the series of all the versions of its group."""
+async def _share_release_group_metadata(database: DatabaseConnection) -> None:
+    """Give every library version of an album the series and first year of its group."""
     rows = await database.get_rows_from_query(
-        f"""SELECT {DB_TABLE_ALBUMS}.item_id AS item_id,
-                json_extract({DB_TABLE_ALBUMS}.metadata, '$.collections') AS collections,
+        f"""SELECT {DB_TABLE_ALBUMS}.item_id AS item_id, {GROUP_METADATA_COLUMNS},
                 (SELECT MIN(lookup.external_id) FROM {DB_TABLE_EXTERNAL_ID_LOOKUP} lookup
                     WHERE lookup.media_type = 'album'
                     AND lookup.external_id_type = '{ExternalID.MB_RELEASEGROUP.value}'
@@ -76,26 +78,15 @@ async def _share_release_group_series(database: DatabaseConnection) -> None:
             FROM {DB_TABLE_ALBUMS}""",
         limit=0,
     )
-    groups: dict[str, dict[int, list[MediaItemCollection]]] = {}
+    groups: dict[str, list[Mapping[str, Any]]] = {}
     for row in rows:
-        if not row["release_group_id"]:
+        if row["release_group_id"]:
+            groups.setdefault(row["release_group_id"], []).append(row)
+    for group_rows in groups.values():
+        if len(group_rows) < 2:
             continue
-        groups.setdefault(row["release_group_id"], {})[int(row["item_id"])] = [
-            MediaItemCollection.from_dict(entry) for entry in json_loads(row["collections"] or "[]")
-        ]
-    for versions in groups.values():
-        if len(versions) < 2:
-            continue
-        for item_id, collections in share_collections(versions).items():
-            await database.execute(
-                f"UPDATE {DB_TABLE_ALBUMS} SET metadata = "
-                "json_set(metadata, '$.collections', json(:collections)) "
-                "WHERE item_id = :item_id",
-                {
-                    "collections": json_dumps([entry.to_dict() for entry in collections]),
-                    "item_id": item_id,
-                },
-            )
+        for item_id, update in shared_group_metadata(group_versions(group_rows)).items():
+            await write_group_metadata(database, item_id, update)
 
 
 # append only: the position of a step is its version number
@@ -103,7 +94,7 @@ _STEPS: Final[tuple[Callable[[DatabaseConnection], Awaitable[None]], ...]] = (
     _create_album_group_defaults,
     _add_album_track_disc_subtitle,
     _create_album_series_hidden,
-    _share_release_group_series,
+    _share_release_group_metadata,
 )
 
 

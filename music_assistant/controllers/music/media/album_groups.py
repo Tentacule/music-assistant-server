@@ -23,6 +23,7 @@ from music_assistant_models.media_items import (
     Album,
     MediaCollection,
     MediaItemCollection,
+    MediaItemMetadata,
     UniqueList,
 )
 
@@ -40,10 +41,15 @@ from music_assistant.helpers.collections import (
     get_collection_item_id,
     get_collection_name_from_item_id,
     merge_item_collections,
-    share_collections,
 )
 from music_assistant.helpers.external_ids import barcode_to_upc, is_valid_barcode
-from music_assistant.helpers.json import json_dumps, json_loads
+from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.release_groups import (
+    GROUP_METADATA_COLUMNS,
+    group_versions,
+    shared_group_metadata,
+    write_group_metadata,
+)
 from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
 
 from .base import MediaControllerBase
@@ -99,21 +105,6 @@ class AlbumGroupsMixin(_Base):
 
     if TYPE_CHECKING:
         versions: Callable[..., Awaitable[list[Album]]]
-
-    def _register_album_group_commands(self) -> None:
-        """Register the release-group API commands."""
-        for name, handler, scope in (
-            ("library_items", self.album_group_items, Scope.LIBRARY_READ),
-            ("count", self.album_group_count, Scope.LIBRARY_READ),
-            ("artist_albums", self.album_group_artist_albums, Scope.LIBRARY_READ),
-            ("versions", self.album_group_versions, Scope.LIBRARY_READ),
-            ("info", self.album_group_info, Scope.LIBRARY_READ),
-            ("set_default", self.set_album_group_default, Scope.LIBRARY_WRITE),
-            ("series", self.album_series, Scope.LIBRARY_READ),
-            ("hidden_series", self.hidden_album_series, Scope.LIBRARY_READ),
-            ("set_series_hidden", self.set_album_series_hidden, Scope.LIBRARY_WRITE),
-        ):
-            self.mass.register_api_command(f"{_API_BASE}/{name}", handler, required_scope=scope)
 
     async def album_group_items(  # noqa: PLR0913
         self,
@@ -334,74 +325,6 @@ class AlbumGroupsMixin(_Base):
             collapsed = await self._apply_series(collapsed, collapse_collections, series_filter)
         return collapsed[offset : offset + limit] if limit else collapsed[offset:]
 
-    async def _apply_series(
-        self,
-        albums: list[Album | MediaCollection[Album]],
-        collapse_collections: bool,
-        series_filter: str,
-    ) -> list[Album | MediaCollection[Album]]:
-        """
-        Filter a listing of albums on their series and optionally group each series.
-
-        The series of a library album are read from the library, so a provider album is in
-        no series. An album in two series shows up in both.
-
-        :param albums: The albums, in the order they are listed.
-        :param collapse_collections: Replace the albums of a series by one MediaCollection.
-        :param series_filter: "albums" keeps the albums in no series, "series" those in one.
-        """
-        series_of = await self._library_album_series(albums)
-        result: list[Album | MediaCollection[Album]] = []
-        groups: dict[str, MediaCollection[Album]] = {}
-        sequences: dict[str, list[tuple[Any, Album]]] = {}
-        for album in albums:
-            series = series_of.get(album.item_id, []) if _is_library_album(album) else []
-            if series_filter == "albums" and series:
-                continue
-            if series_filter == "series" and not series:
-                continue
-            if not collapse_collections or not series:
-                result.append(album)
-                continue
-            for collection in series:
-                if collection.title not in groups:
-                    groups[collection.title] = MediaCollection(
-                        item_id=get_collection_item_id(collection.title, MediaType.ALBUM),
-                        provider="library",
-                        name=collection.title,
-                        provider_mappings=set(),
-                        items=UniqueList(),
-                    )
-                    sequences[collection.title] = []
-                    result.append(groups[collection.title])
-                sequences[collection.title].append((collection.sequence, cast("Album", album)))
-        for title, group in groups.items():
-            group.items = UniqueList(
-                album for _, album in sorted(sequences[title], key=lambda x: _sequence_key(x[0]))
-            )
-        return result
-
-    async def _library_album_series(
-        self, albums: list[Album | MediaCollection[Album]]
-    ) -> dict[str, list[MediaItemCollection]]:
-        """Return the series of each library album in the listing, by item id."""
-        library_ids = [int(album.item_id) for album in albums if _is_library_album(album)]
-        if not library_ids:
-            return {}
-        rows = await self.mass.music.database.get_rows_from_query(
-            f"""SELECT item_id, json_extract(metadata, '$.collections') AS collections
-                FROM {DB_TABLE_ALBUMS} WHERE item_id IN :item_ids""",
-            {"item_ids": library_ids},
-            limit=0,
-        )
-        return {
-            str(row["item_id"]): [
-                MediaItemCollection.from_dict(entry) for entry in json_loads(row["collections"])
-            ]
-            for row in rows
-            if row["collections"]
-        }
-
     async def album_group_versions(
         self,
         item_id: str,
@@ -570,6 +493,89 @@ class AlbumGroupsMixin(_Base):
             for title in await self._hidden_series_titles()
         )
 
+    def _register_album_group_commands(self) -> None:
+        """Register the release-group API commands."""
+        for name, handler, scope in (
+            ("library_items", self.album_group_items, Scope.LIBRARY_READ),
+            ("count", self.album_group_count, Scope.LIBRARY_READ),
+            ("artist_albums", self.album_group_artist_albums, Scope.LIBRARY_READ),
+            ("versions", self.album_group_versions, Scope.LIBRARY_READ),
+            ("info", self.album_group_info, Scope.LIBRARY_READ),
+            ("set_default", self.set_album_group_default, Scope.LIBRARY_WRITE),
+            ("series", self.album_series, Scope.LIBRARY_READ),
+            ("hidden_series", self.hidden_album_series, Scope.LIBRARY_READ),
+            ("set_series_hidden", self.set_album_series_hidden, Scope.LIBRARY_WRITE),
+        ):
+            self.mass.register_api_command(f"{_API_BASE}/{name}", handler, required_scope=scope)
+
+    async def _apply_series(
+        self,
+        albums: list[Album | MediaCollection[Album]],
+        collapse_collections: bool,
+        series_filter: str,
+    ) -> list[Album | MediaCollection[Album]]:
+        """
+        Filter a listing of albums on their series and optionally group each series.
+
+        The series of a library album are read from the library, so a provider album is in
+        no series. An album in two series shows up in both.
+
+        :param albums: The albums, in the order they are listed.
+        :param collapse_collections: Replace the albums of a series by one MediaCollection.
+        :param series_filter: "albums" keeps the albums in no series, "series" those in one.
+        """
+        series_of = await self._library_album_series(albums)
+        result: list[Album | MediaCollection[Album]] = []
+        groups: dict[str, MediaCollection[Album]] = {}
+        sequences: dict[str, list[tuple[Any, Album]]] = {}
+        for album in albums:
+            series = series_of.get(album.item_id, []) if _is_library_album(album) else []
+            if series_filter == "albums" and series:
+                continue
+            if series_filter == "series" and not series:
+                continue
+            if not collapse_collections or not series:
+                result.append(album)
+                continue
+            for collection in series:
+                if collection.title not in groups:
+                    groups[collection.title] = MediaCollection(
+                        item_id=get_collection_item_id(collection.title, MediaType.ALBUM),
+                        provider="library",
+                        name=collection.title,
+                        provider_mappings=set(),
+                        items=UniqueList(),
+                    )
+                    sequences[collection.title] = []
+                    result.append(groups[collection.title])
+                sequences[collection.title].append((collection.sequence, cast("Album", album)))
+        for title, group in groups.items():
+            group.items = UniqueList(
+                album for _, album in sorted(sequences[title], key=lambda x: _sequence_key(x[0]))
+            )
+        return result
+
+    async def _library_album_series(
+        self, albums: list[Album | MediaCollection[Album]]
+    ) -> dict[str, list[MediaItemCollection]]:
+        """Return the series of each library album in the listing, by item id."""
+        library_ids = [int(album.item_id) for album in albums if _is_library_album(album)]
+        if not library_ids:
+            return {}
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"""SELECT item_id, json_extract(metadata, '$.collections') AS collections
+                FROM {DB_TABLE_ALBUMS} WHERE item_id IN :item_ids""",
+            {"item_ids": library_ids},
+            limit=0,
+        )
+        return {
+            str(row["item_id"]): [
+                MediaItemCollection.from_dict(entry) for entry in json_loads(row["collections"])
+            ]
+            for row in rows
+            if row["collections"]
+        }
+
     async def _hidden_series_titles(self) -> set[str]:
         """Return the titles of the hidden album series."""
         rows = await self.mass.music.database.get_rows(DB_TABLE_ALBUM_SERIES_HIDDEN, limit=0)
@@ -673,9 +679,9 @@ class AlbumGroupsMixin(_Base):
             or int(album.item_id) in winners
         ]
 
-    async def _add_release_group_series(self, album: Album) -> None:
+    async def _add_release_group_metadata(self, album: Album) -> None:
         """
-        Add to an album that is not in the library the series of its library versions.
+        Add the series and first release year of its library versions to an outside album.
 
         :param album: A provider album, as shown on its page.
         """
@@ -684,28 +690,24 @@ class AlbumGroupsMixin(_Base):
         if not (release_group_id := await self._resolve_release_group(album, _BarcodeBudget())):
             return
         rows = await self.mass.music.database.get_rows_from_query(
-            f"SELECT json_extract({DB_TABLE_ALBUMS}.metadata, '$.collections') AS collections "
+            f"SELECT {DB_TABLE_ALBUMS}.item_id AS item_id, {GROUP_METADATA_COLUMNS} "
             f"FROM {DB_TABLE_ALBUMS} WHERE {_RELEASE_GROUP_SQL} = :release_group_id",
             {"release_group_id": release_group_id},
             limit=0,
         )
-        collections = album.metadata.collections
-        for row in rows:
-            collections = merge_item_collections(
-                collections,
-                [
-                    MediaItemCollection.from_dict(entry)
-                    for entry in json_loads(row["collections"] or "[]")
-                ],
+        for collections, original_year in group_versions(rows).values():
+            album.metadata.collections = merge_item_collections(
+                album.metadata.collections, collections
             )
-        album.metadata.collections = collections
+            if original_year:
+                album.metadata.update(MediaItemMetadata(original_year=original_year))
 
-    async def _share_release_group_series(self, library_id: int) -> None:
+    async def _share_release_group_metadata(self, library_id: int) -> None:
         """
-        Give every library version of an album the series of all its versions.
+        Give every library version of an album the series and first release year of its group.
 
-        A series is one of the release group, so a series known for one version holds for
-        the others, which may come from a provider that does not know it.
+        They belong to the release group, so what one version knows holds for the others,
+        which may come from a provider that does not know it.
 
         :param library_id: The library id of the album that was added or updated.
         """
@@ -713,33 +715,15 @@ class AlbumGroupsMixin(_Base):
             return
         database = self.mass.music.database
         rows = await database.get_rows_from_query(
-            f"SELECT {DB_TABLE_ALBUMS}.item_id AS item_id, "
-            f"json_extract({DB_TABLE_ALBUMS}.metadata, '$.collections') AS collections "
+            f"SELECT {DB_TABLE_ALBUMS}.item_id AS item_id, {GROUP_METADATA_COLUMNS} "
             f"FROM {DB_TABLE_ALBUMS} WHERE {_RELEASE_GROUP_SQL} = :release_group_id",
             {"release_group_id": release_group_id},
             limit=0,
         )
         if len(rows) < 2:
             return
-        changes = share_collections(
-            {
-                int(row["item_id"]): [
-                    MediaItemCollection.from_dict(entry)
-                    for entry in json_loads(row["collections"] or "[]")
-                ]
-                for row in rows
-            }
-        )
-        for item_id, collections in changes.items():
-            await database.execute_write(
-                f"UPDATE {DB_TABLE_ALBUMS} SET metadata = "
-                "json_set(metadata, '$.collections', json(:collections)) "
-                "WHERE item_id = :item_id",
-                {
-                    "collections": json_dumps([entry.to_dict() for entry in collections]),
-                    "item_id": item_id,
-                },
-            )
+        for item_id, update in shared_group_metadata(group_versions(rows)).items():
+            await write_group_metadata(database, item_id, update)
             if item_id != library_id:
                 album = await self.get_library_item(item_id)
                 self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, album.uri, album)

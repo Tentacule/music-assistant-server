@@ -53,6 +53,7 @@ from music_assistant.controllers.music.helpers import (
 )
 from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
 from music_assistant.controllers.music.listing_cache import Listing, cached_listing
+from music_assistant.controllers.music.sorting import get_default_direction
 from music_assistant.helpers.collections import merge_item_collections
 from music_assistant.helpers.compare import (
     ALBUM_RETAIL_SUFFIX_KEYS,
@@ -192,6 +193,7 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
             {self._summary_base_columns()},
             albums.version,
             albums.year,
+            json_extract(albums.metadata, '$.original_year') AS original_year,
             albums.album_type,
             {self._provider_mappings_query()} AS provider_mappings,
             {artists_query} AS artists
@@ -227,8 +229,8 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
                     )
                 )
         album.artists = album_artists
-        # a version that is not in the library is in the series of its library versions
-        await self._add_release_group_series(album)
+        # a version that is not in the library shares the series and year of its library versions
+        await self._add_release_group_metadata(album)
         return album
 
     if TYPE_CHECKING:
@@ -1040,8 +1042,8 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
         # set track artist(s)
         await self._set_album_artists(db_id, item.artists)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
-        # a new version shares the series of the versions in the library, and gives them its own
-        await self._share_release_group_series(db_id)
+        # a new version shares the series and first year of its group, and gives its own
+        await self._share_release_group_metadata(db_id)
         return db_id
 
     async def _update_library_item(
@@ -1103,7 +1105,7 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
         artists = update.artists if overwrite else cur_item.artists + update.artists
         await self._set_album_artists(db_id, artists, overwrite=overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
-        await self._share_release_group_series(db_id)
+        await self._share_release_group_metadata(db_id)
 
     async def _get_provider_album_tracks(
         self, item_id: str, provider_instance_id_or_domain: str
@@ -1890,6 +1892,13 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
             if direction == SortDirection.DESC:
                 return "artists.search_name DESC, year DESC"
             return "artists.search_name ASC, year DESC"
+        if field == SortField.YEAR:
+            # the year of the first release, the year of the edition when it is not known
+            order = (direction or get_default_direction(field)).value.upper()
+            return (
+                f"COALESCE(json_extract({self.db_table}.metadata, '$.original_year'), "
+                f"{self.db_table}.year) {order}"
+            )
         return super()._get_sort_sql(field, direction)
 
     def _parse_summary_row(
@@ -1899,6 +1908,7 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
         item = cast("AlbumSummary", super()._parse_summary_row(db_row, hidden_sources))
         item.version = db_row["version"] or ""
         item.year = db_row["year"]
+        item.metadata.original_year = db_row["original_year"]
         item.album_type = AlbumType(db_row["album_type"])
         item.artists = self._parse_summary_artist_mappings(db_row)
         return item
