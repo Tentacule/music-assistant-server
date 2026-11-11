@@ -14,6 +14,7 @@ from music_assistant.constants import DB_TABLE_ALBUMS, DB_TABLE_SETTINGS
 from music_assistant.controllers.music.custom_migrations import (
     CUSTOM_SCHEMA_VERSION_KEY,
     DB_TABLE_ALBUM_GROUP_DEFAULTS,
+    DB_TABLE_ALBUM_SERIES_HIDDEN,
     migrate_custom_schema,
 )
 from music_assistant.helpers.json import json_dumps
@@ -262,19 +263,83 @@ async def test_artist_albums_group_and_filter_series(music_mass: MusicAssistant)
     assert [item.name for item in saga.items] == ["Saga One", "Saga Two"]
 
 
+async def _add_series(mass: MusicAssistant, title: str, *names: str) -> None:
+    """
+    Add albums to the library as the albums of one series, in the given order.
+
+    :param mass: The Music Assistant instance.
+    :param title: The title of the series.
+    :param names: The names of the albums of the series.
+    """
+    for sequence, name in enumerate(names, start=1):
+        album = await _add_album(mass, f"{title}-{sequence}", name, None, 100)
+        await mass.music.database.update(
+            DB_TABLE_ALBUMS,
+            {"item_id": int(album.item_id)},
+            {"metadata": json_dumps({"collections": [{"title": title, "sequence": sequence}]})},
+        )
+
+
+async def test_series_list_holds_the_series_only(music_mass_with_cache: MusicAssistant) -> None:
+    """The series list holds one item per series, and no album outside a series."""
+    await _add_series(music_mass_with_cache, "Saga", "Saga One", "Saga Two")
+    await _add_series(music_mass_with_cache, "Cycle", "Cycle One")
+    await _add_album(music_mass_with_cache, "x1", "Standalone", None, 100)
+
+    series = await music_mass_with_cache.music.albums.album_series()
+
+    assert sorted(item.name for item in series) == ["Cycle", "Saga"]
+    saga = next(item for item in series if item.name == "Saga")
+    assert [item.name for item in saga.items] == ["Saga One", "Saga Two"]
+
+
+async def test_hidden_series_leave_the_series_list(music_mass_with_cache: MusicAssistant) -> None:
+    """A hidden series moves to the hidden list, and the album listings keep it."""
+    await _add_series(music_mass_with_cache, "Saga", "Saga One", "Saga Two")
+    await _add_series(music_mass_with_cache, "Cycle", "Cycle One")
+    albums = music_mass_with_cache.music.albums
+
+    await albums.set_album_series_hidden("album___Saga", True)
+
+    assert [item.name for item in await albums.album_series()] == ["Cycle"]
+    assert [item.name for item in await albums.album_series(hidden=True)] == ["Saga"]
+    grouped = await albums.album_group_items(collapse_collections=True)
+    assert sorted(item.name for item in grouped) == ["Cycle", "Saga"]
+
+    await albums.set_album_series_hidden("album___Saga", False)
+
+    assert sorted(item.name for item in await albums.album_series()) == ["Cycle", "Saga"]
+    assert await albums.album_series(hidden=True) == []
+
+
+async def test_series_list_pages(music_mass_with_cache: MusicAssistant) -> None:
+    """The series list pages over the series, not over their albums."""
+    await _add_series(music_mass_with_cache, "Alpha", "Alpha One", "Alpha Two")
+    await _add_series(music_mass_with_cache, "Beta", "Beta One")
+    albums = music_mass_with_cache.music.albums
+
+    first = await albums.album_series(limit=1)
+    second = await albums.album_series(limit=1, offset=1)
+
+    assert len(first) == len(second) == 1
+    assert {first[0].name, second[0].name} == {"Alpha", "Beta"}
+
+
 async def test_custom_migration_is_idempotent(music_mass: MusicAssistant) -> None:
-    """The custom steps ran at setup, and running them again keeps the stored default."""
+    """The custom steps ran at setup, and running them again keeps the stored rows."""
     database = music_mass.music.database
     row = await database.get_row(DB_TABLE_SETTINGS, {"key": CUSTOM_SCHEMA_VERSION_KEY})
     assert row is not None
     await database.insert_or_replace(
         DB_TABLE_ALBUM_GROUP_DEFAULTS, {"release_group_id": GROUP_A, "album_id": 1}
     )
+    await database.insert_or_replace(DB_TABLE_ALBUM_SERIES_HIDDEN, {"title": "Saga"})
     await database.delete(DB_TABLE_SETTINGS, {"key": CUSTOM_SCHEMA_VERSION_KEY})
 
     await migrate_custom_schema(database, Mock())
 
     assert await database.get_row(DB_TABLE_ALBUM_GROUP_DEFAULTS, {"release_group_id": GROUP_A})
+    assert await database.get_row(DB_TABLE_ALBUM_SERIES_HIDDEN, {"title": "Saga"})
     assert await database.get_row(DB_TABLE_SETTINGS, {"key": CUSTOM_SCHEMA_VERSION_KEY})
 
 

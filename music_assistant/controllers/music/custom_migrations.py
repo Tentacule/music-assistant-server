@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 CUSTOM_SCHEMA_VERSION_KEY: Final[str] = "custom_schema_version"
 DB_TABLE_ALBUM_GROUP_DEFAULTS: Final[str] = "album_release_group_defaults"
+DB_TABLE_ALBUM_SERIES_HIDDEN: Final[str] = "album_series_hidden"
 
 
 async def _create_album_group_defaults(database: DatabaseConnection) -> None:
@@ -45,10 +46,19 @@ async def _add_album_track_disc_subtitle(database: DatabaseConnection) -> None:
         )
 
 
+async def _create_album_series_hidden(database: DatabaseConnection) -> None:
+    """Create the table holding the album series hidden from the series list."""
+    await database.execute(
+        f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_SERIES_HIDDEN}(
+                [title] TEXT PRIMARY KEY);"""
+    )
+
+
 # append only: the position of a step is its version number
 _STEPS: Final[tuple[Callable[[DatabaseConnection], Awaitable[None]], ...]] = (
     _create_album_group_defaults,
     _add_album_track_disc_subtitle,
+    _create_album_series_hidden,
 )
 
 

@@ -27,13 +27,19 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import DB_TABLE_ALBUMS, DB_TABLE_EXTERNAL_ID_LOOKUP
-from music_assistant.controllers.music.custom_migrations import DB_TABLE_ALBUM_GROUP_DEFAULTS
+from music_assistant.controllers.music.custom_migrations import (
+    DB_TABLE_ALBUM_GROUP_DEFAULTS,
+    DB_TABLE_ALBUM_SERIES_HIDDEN,
+)
 from music_assistant.controllers.music.helpers import (
     search_name_match_clause,
     series_filter_clause,
 )
 from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
-from music_assistant.helpers.collections import get_collection_item_id
+from music_assistant.helpers.collections import (
+    get_collection_item_id,
+    get_collection_name_from_item_id,
+)
 from music_assistant.helpers.external_ids import barcode_to_upc, is_valid_barcode
 from music_assistant.helpers.json import json_loads
 from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
@@ -101,6 +107,8 @@ class AlbumGroupsMixin(_Base):
             ("versions", self.album_group_versions, Scope.LIBRARY_READ),
             ("info", self.album_group_info, Scope.LIBRARY_READ),
             ("set_default", self.set_album_group_default, Scope.LIBRARY_WRITE),
+            ("series", self.album_series, Scope.LIBRARY_READ),
+            ("set_series_hidden", self.set_album_series_hidden, Scope.LIBRARY_WRITE),
         ):
             self.mass.register_api_command(f"{_API_BASE}/{name}", handler, required_scope=scope)
 
@@ -500,6 +508,62 @@ class AlbumGroupsMixin(_Base):
         )
         album = await self.get_library_item(library_id)
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, album.uri, album)
+
+    async def album_series(
+        self,
+        hidden: bool = False,
+        search: str | None = None,
+        limit: int = 500,
+        offset: int = 0,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        random_seed: int | None = None,
+    ) -> list[MediaCollection[Album]]:
+        """
+        Return the album series of the library, each with its albums in series order.
+
+        :param hidden: List the hidden series instead of the shown ones.
+        :param search: Only list the series whose name or one of its albums matches.
+        :param limit: Maximum number of series to return; 0 returns them all.
+        :param offset: Number of series to skip.
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param random_seed: Keep random ordering stable across pages with the same seed.
+        """
+        hidden_titles = await self._hidden_series_titles()
+        series = [
+            item
+            for item in await self.album_group_items(
+                search=search,
+                limit=0,
+                sort_field=sort_field,
+                sort_direction=sort_direction,
+                collapse_collections=True,
+                series_filter="series",
+                random_seed=random_seed,
+            )
+            if isinstance(item, MediaCollection) and (item.name in hidden_titles) == hidden
+        ]
+        return series[offset : offset + limit] if limit else series[offset:]
+
+    async def set_album_series_hidden(self, item_id: str, hidden: bool) -> None:
+        """
+        Hide an album series from the series list, or show it again.
+
+        :param item_id: The item id of the series.
+        :param hidden: Hide the series (True) or show it (False).
+        """
+        title = get_collection_name_from_item_id(item_id)
+        database = self.mass.music.database
+        if hidden:
+            await database.insert_or_replace(DB_TABLE_ALBUM_SERIES_HIDDEN, {"title": title})
+        else:
+            await database.delete(DB_TABLE_ALBUM_SERIES_HIDDEN, {"title": title})
+
+    async def _hidden_series_titles(self) -> set[str]:
+        """Return the titles of the hidden album series."""
+        rows = await self.mass.music.database.get_rows(DB_TABLE_ALBUM_SERIES_HIDDEN, limit=0)
+        return {row["title"] for row in rows}
 
     def _representative_clause(
         self,
