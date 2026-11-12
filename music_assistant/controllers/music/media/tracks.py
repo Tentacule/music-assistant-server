@@ -1665,7 +1665,7 @@ class TracksController(MediaControllerBase[Track]):
                 db_id=db_id,
                 album=update.album,
                 disc_number=update.disc_number or cur_item.disc_number,
-                disc_subtitle=update.disc_subtitle or cur_item.disc_subtitle,
+                disc_subtitle=getattr(update, "disc_subtitle", "") or getattr(cur_item, "disc_subtitle", ""),
                 track_number=update.track_number or cur_item.track_number,
                 overwrite=overwrite,
             )
