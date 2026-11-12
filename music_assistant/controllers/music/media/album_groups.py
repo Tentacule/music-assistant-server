@@ -435,6 +435,29 @@ class AlbumGroupsMixin(_Base):
         album = await self.get_library_item(library_id)
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, album.uri, album)
 
+    async def get_collection(
+        self,
+        item_id: str,
+        search: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        favorite: bool | None = None,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+    ) -> "MediaCollection[Album]":
+        """Return the series with one album per release group, keeping the representative."""
+        result = await super().get_collection(
+            item_id,
+            search=search,
+            limit=limit,
+            offset=offset,
+            favorite=favorite,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+        )
+        result.items = UniqueList(await self._collapse_groups(list(result.items)))
+        return result
+
     async def album_series(
         self,
         hidden: bool = False,
