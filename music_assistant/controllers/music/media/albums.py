@@ -1886,6 +1886,21 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
             },
         )
 
+    def _search_filter_clause(self, search: str, query_params: dict[str, Any]) -> str:
+        """Return search filter matching album name or any disc_subtitle."""
+        name_clause = search_name_match_clause(self.db_table, search, "search", query_params)
+        # disc_subtitle is stored raw in album_tracks; approximate create_safe_string in SQL
+        # (lowercase + strip spaces) which is accurate enough for real disc subtitle values
+        query_params["search_disc_subtitle"] = f"%{search}%"
+        disc_clause = (
+            "albums.item_id IN ("
+            "SELECT album_id FROM album_tracks "
+            "WHERE REPLACE(LOWER(TRIM(album_tracks.disc_subtitle)), ' ', '') "
+            "LIKE :search_disc_subtitle"
+            ")"
+        )
+        return f"({name_clause} OR {disc_clause})"
+
     def _get_sort_sql(self, field: SortField, direction: SortDirection | None) -> str:
         """Return the ORDER BY clause for a sort field, ARTIST_NAME through the artists join."""
         if field == SortField.ARTIST_NAME:
