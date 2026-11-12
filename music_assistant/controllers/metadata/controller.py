@@ -350,48 +350,48 @@ class MetaDataController(
                             raise TypeError("Cannot update metadata on a BrowseFolder item.")
                         item = retrieved_item
 
-                if item.provider != "library":
-                    # this shouldn't happen but just in case.
-                    raise RuntimeError("Metadata can only be updated for library items")
+                    if item.provider != "library":
+                        # this shouldn't happen but just in case.
+                        raise RuntimeError("Metadata can only be updated for library items")
 
-                try:
-                    if item.media_type == MediaType.ARTIST:
-                        await self._update_artist_metadata(
-                            cast("Artist", item), force_refresh=force_refresh
+                    try:
+                        if item.media_type == MediaType.ARTIST:
+                            await self._update_artist_metadata(
+                                cast("Artist", item), force_refresh=force_refresh
+                            )
+                            item = await self.mass.music.artists.get_merged_library_item(
+                                cast("Artist", item)
+                            )
+                        if item.media_type == MediaType.ALBUM:
+                            await self._update_album_metadata(
+                                cast("Album", item), force_refresh=force_refresh
+                            )
+                        if item.media_type == MediaType.TRACK:
+                            await self._update_track_metadata(
+                                cast("Track", item), force_refresh=force_refresh
+                            )
+                        if item.media_type == MediaType.PLAYLIST:
+                            await self._update_playlist_metadata(
+                                cast("Playlist", item), force_refresh=force_refresh
+                            )
+                        if item.media_type == MediaType.AUDIOBOOK:
+                            await self._update_audiobook_metadata(
+                                cast("Audiobook", item), force_refresh=force_refresh
+                            )
+                        if item.media_type == MediaType.PODCAST:
+                            await self._update_podcast_metadata(
+                                cast("Podcast", item), force_refresh=force_refresh
+                            )
+                    except MediaNotFoundError:
+                        # the item can be removed from the library, or merged into another, while its
+                        # update runs
+                        if await self._in_library(item):
+                            raise
+                        self.logger.debug(
+                            "%s %s was removed from the library, skipping",
+                            item.media_type.value,
+                            item.name,
                         )
-                        item = await self.mass.music.artists.get_merged_library_item(
-                            cast("Artist", item)
-                        )
-                    if item.media_type == MediaType.ALBUM:
-                        await self._update_album_metadata(
-                            cast("Album", item), force_refresh=force_refresh
-                        )
-                    if item.media_type == MediaType.TRACK:
-                        await self._update_track_metadata(
-                            cast("Track", item), force_refresh=force_refresh
-                        )
-                    if item.media_type == MediaType.PLAYLIST:
-                        await self._update_playlist_metadata(
-                            cast("Playlist", item), force_refresh=force_refresh
-                        )
-                    if item.media_type == MediaType.AUDIOBOOK:
-                        await self._update_audiobook_metadata(
-                            cast("Audiobook", item), force_refresh=force_refresh
-                        )
-                    if item.media_type == MediaType.PODCAST:
-                        await self._update_podcast_metadata(
-                            cast("Podcast", item), force_refresh=force_refresh
-                        )
-                except MediaNotFoundError:
-                    # the item can be removed from the library, or merged into another, while its
-                    # update runs
-                    if await self._in_library(item):
-                        raise
-                    self.logger.debug(
-                        "%s %s was removed from the library, skipping",
-                        item.media_type.value,
-                        item.name,
-                    )
         return item
 
     def schedule_update_metadata(self, item: MediaItemType) -> None:
