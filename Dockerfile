@@ -71,6 +71,10 @@ RUN uv pip install \
 RUN ls dist/music_assistant_frontend-*.whl 1>/dev/null 2>&1 && \
     uv pip install --no-deps --force-reinstall dist/music_assistant_frontend-*.whl || true
 
+# Override music-assistant-models with a local build when one is present in dist/.
+RUN ls dist/music_assistant_models-*.whl 1>/dev/null 2>&1 && \
+    uv pip install --no-deps --force-reinstall dist/music_assistant_models-*.whl || true
+
 # Install cliairplay into the MA providers directory.
 # Skip individual binaries that are already present (official-image base case).
 COPY --from=cliairplay /cliairplay /tmp/cliairplay
