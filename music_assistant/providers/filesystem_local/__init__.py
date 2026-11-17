@@ -915,6 +915,11 @@ class LocalFileSystemProvider(MusicProvider):
             raise MediaNotFoundError(msg)
         parsed_cue_paths: set[str] = set()
         missing_file_error: FileNotFoundError | None = None
+        # under an album id that is no folder (artist + album name), a track keeps all of its
+        # files, including one in another album's folder (e.g. a compilation track merged with
+        # the same recording on the artist's own album); that file's tags describe the other
+        # album, so it is only used when no file of this album is found
+        other_album: Album | None = None
         # early returns below stop iterating this generator before it's exhausted; without an
         # explicit aclose() that leaves its _ondemand_listing_scope() cleanup (a ContextVar
         # reset) to whenever the event loop's async-generator finalizer happens to run, instead
@@ -948,7 +953,13 @@ class LocalFileSystemProvider(MusicProvider):
                     tags = await self._parse_tags(file_item)
                     full_track = await self._parse_track(file_item, tags)
                     assert isinstance(full_track.album, Album)
-                    return full_track.album
+                    if full_track.album.item_id == prov_album_id:
+                        return full_track.album
+                    if other_album is None:
+                        other_album = full_track.album
+        if other_album is not None:
+            # e.g. the album tags changed since the id was made: still the best we have
+            return other_album
         if missing_file_error:
             raise missing_file_error
         msg = f"Album not found: {prov_album_id}"
