@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
@@ -49,7 +49,8 @@ from .album_groups import (
 if TYPE_CHECKING:
     from music_assistant_models.enums import SortDirection, SortField
 
-AlbumVisibility = Literal["visible", "hidden", "all"]
+# the API parses no Literal, so the album visibility of a series is a plain string
+_ALBUM_VISIBILITIES: Final[tuple[str, ...]] = ("visible", "hidden", "all")
 
 _DEFAULT_INFO: Final[tuple[AlbumSeriesType, AlbumSeriesSource]] = (
     AlbumSeriesType.ALBUM_SERIES,
@@ -127,7 +128,7 @@ class AlbumSeriesMixin(AlbumGroupsMixin):
         favorite: bool | None = None,
         sort_field: SortField | None = None,
         sort_direction: SortDirection | None = None,
-        album_visibility: AlbumVisibility = "visible",
+        album_visibility: str = "visible",
     ) -> MediaCollection[Album]:
         """
         Return an album series with one album per release group.
@@ -142,6 +143,9 @@ class AlbumSeriesMixin(AlbumGroupsMixin):
         :param album_visibility: "visible" (default) lists the albums in the series, "hidden"
             the albums removed from it, "all" both.
         """
+        if album_visibility not in _ALBUM_VISIBILITIES:
+            msg = f"Unknown album visibility {album_visibility}"
+            raise InvalidDataError(msg)
         title = get_collection_name_from_item_id(item_id)
         visible_only = album_visibility == "visible"
         info = await self._series_info()

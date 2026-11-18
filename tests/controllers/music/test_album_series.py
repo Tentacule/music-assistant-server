@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import TYPE_CHECKING
 
 import pytest
@@ -10,6 +11,7 @@ from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import MediaItemCollection
 
 from music_assistant.constants import DB_TABLE_ALBUMS
+from music_assistant.helpers.api import _get_type_hints_for_api_command, parse_arguments
 from music_assistant.helpers.json import json_dumps
 
 from .helpers import create_album
@@ -210,3 +212,44 @@ async def test_adding_needs_a_library_album_and_a_series(mass: MusicAssistant) -
         await albums.add_album_series_album("album___Unknown", album.item_id)
     with pytest.raises(MediaNotFoundError):
         await albums.add_album_series_album("album___Mine", "999999")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "get_collection",
+        "album_series",
+        "create_album_series",
+        "set_album_series_type",
+        "add_album_series_album",
+    ],
+)
+async def test_the_api_parses_the_series_arguments(mass: MusicAssistant, command: str) -> None:
+    """Every argument of the series commands goes through the parser of the API."""
+    handler = getattr(mass.music.albums, command)
+    signature = inspect.signature(handler)
+    args = {
+        "item_id": "album___Saga",
+        "album_id": "1",
+        "name": "Saga",
+        "series_type": "ranked_list",
+        "sequence": "3",
+        "album_visibility": "hidden",
+    }
+
+    parsed = parse_arguments(
+        signature,
+        _get_type_hints_for_api_command(handler),
+        {key: value for key, value in args.items() if key in signature.parameters},
+    )
+
+    if "series_type" in parsed:
+        assert parsed["series_type"] == AlbumSeriesType.RANKED_LIST
+
+
+async def test_an_unknown_album_visibility_is_refused(mass: MusicAssistant) -> None:
+    """The album visibility of a series is one of visible, hidden or all."""
+    await mass.music.albums.create_album_series("Mine")
+
+    with pytest.raises(InvalidDataError):
+        await mass.music.albums.get_collection("album___Mine", album_visibility="gone")
