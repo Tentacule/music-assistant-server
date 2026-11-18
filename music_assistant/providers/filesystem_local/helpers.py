@@ -40,6 +40,7 @@ IGNORE_DIRS = (
     "System Volume Information",
     "lost+found",
     "@eaDir",
+    "__MACOSX",
 )
 
 
@@ -595,7 +596,8 @@ def recursive_iter(
                 return
             if (
                 item.name in IGNORE_DIRS
-                or item.name.startswith((".", "_"))
+                # a leading "_" is a common naming scheme ("_1980_ Album"), not a hidden entry
+                or item.name.startswith(".")
                 or _skip_undecodable_name(item.name, log)
             ):
                 continue

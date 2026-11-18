@@ -303,6 +303,25 @@ def test_recursive_iter_happy_path(tmp_path: Path) -> None:
     assert errors.failed_dirs == 0
 
 
+def test_recursive_iter_includes_underscore_names_and_skips_hidden(tmp_path: Path) -> None:
+    """Test that names starting with "_" are scanned while hidden and ignored dirs are not."""
+    (tmp_path / "Iron Maiden" / "_1980_ Iron Maiden _1998 Remastered_").mkdir(parents=True)
+    (tmp_path / "Iron Maiden" / "_1980_ Iron Maiden _1998 Remastered_" / "01.mp3").write_bytes(b"x")
+    (tmp_path / "Album").mkdir()
+    (tmp_path / "Album" / "_01_ Track.mp3").write_bytes(b"x")
+    (tmp_path / ".hidden").mkdir()
+    (tmp_path / ".hidden" / "track.mp3").write_bytes(b"x")
+    (tmp_path / "__MACOSX").mkdir()
+    (tmp_path / "__MACOSX" / "track.mp3").write_bytes(b"x")
+    items = list(
+        helpers.recursive_iter(str(tmp_path), str(tmp_path), SUPPORTED, logging.getLogger("test"))
+    )
+    assert sorted(i.relative_path for i in items) == [
+        "Album/_01_ Track.mp3",
+        "Iron Maiden/_1980_ Iron Maiden _1998 Remastered_/01.mp3",
+    ]
+
+
 def test_recursive_iter_root_unreachable_records_error(tmp_path: Path) -> None:
     """Test that a missing root path is reported via scan_errors."""
     errors = helpers.ScanErrors()
