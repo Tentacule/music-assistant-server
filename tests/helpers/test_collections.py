@@ -16,6 +16,9 @@ from music_assistant_models.media_items import (
 from music_assistant.helpers.collections import (
     has_available_item,
     merge_item_collections,
+    parse_collection_sequence,
+    remove_item_collections,
+    set_item_collection,
     share_collections,
 )
 
@@ -123,3 +126,40 @@ async def test_share_collections_gives_every_item_the_series_of_all() -> None:
 async def test_share_collections_without_series_changes_nothing() -> None:
     """Items without any series stay as they are."""
     assert share_collections({1: None, 2: []}) == {}
+
+
+async def test_set_item_collection_replaces_the_number() -> None:
+    """The number given replaces the stored one, None included, the others are kept."""
+    current = [MediaItemCollection(title="Now", sequence=3), MediaItemCollection(title="Hits")]
+
+    assert set_item_collection(current, "Now", None) == [
+        MediaItemCollection(title="Hits"),
+        MediaItemCollection(title="Now"),
+    ]
+    assert set_item_collection(None, "Best", 2) == [MediaItemCollection(title="Best", sequence=2)]
+
+
+async def test_remove_item_collections_keeps_the_others() -> None:
+    """Only the collections with the given titles are removed."""
+    current = [MediaItemCollection(title="Now", sequence=3), MediaItemCollection(title="Hits")]
+
+    assert remove_item_collections(current, ["Now"]) == [MediaItemCollection(title="Hits")]
+    assert remove_item_collections(None, ["Now"]) == []
+
+
+@pytest.mark.parametrize(
+    ("typed", "stored"),
+    [
+        ("3", 3),
+        (" 1,5 ", 1.5),
+        ("2.0", 2),
+        (4.0, 4),
+        ("IV", "IV"),
+        ("", None),
+        (None, None),
+        ("inf", "inf"),
+    ],
+)
+async def test_parse_collection_sequence(typed: str | float | None, stored: object) -> None:
+    """A typed number is stored as a number, a whole one as an int, other text as text."""
+    assert parse_collection_sequence(typed) == stored

@@ -40,6 +40,8 @@ if TYPE_CHECKING:
 CUSTOM_SCHEMA_VERSION_KEY: Final[str] = "custom_schema_version"
 DB_TABLE_ALBUM_GROUP_DEFAULTS: Final[str] = "album_release_group_defaults"
 DB_TABLE_ALBUM_SERIES_HIDDEN: Final[str] = "album_series_hidden"
+DB_TABLE_ALBUM_SERIES_INFO: Final[str] = "album_series_info"
+DB_TABLE_ALBUM_SERIES_EXCLUSIONS: Final[str] = "album_series_exclusions"
 
 
 async def _create_album_group_defaults(database: DatabaseConnection) -> None:
@@ -70,6 +72,28 @@ async def _create_album_series_hidden(database: DatabaseConnection) -> None:
     await database.execute(
         f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_SERIES_HIDDEN}(
                 [title] TEXT PRIMARY KEY);"""
+    )
+
+
+async def _create_album_series_editing(database: DatabaseConnection) -> None:
+    """
+    Create the tables holding the type and source of a series and the albums removed from one.
+
+    A series without info is a series of MusicBrainz (or of the tags). An album removed from
+    such a series keeps its number there, to put it back in its place when it is restored.
+    """
+    await database.execute(
+        f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_SERIES_INFO}(
+                [title] TEXT PRIMARY KEY,
+                [series_type] TEXT NOT NULL DEFAULT 'album_series',
+                [source] TEXT NOT NULL DEFAULT 'musicbrainz');"""
+    )
+    await database.execute(
+        f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_SERIES_EXCLUSIONS}(
+                [title] TEXT NOT NULL,
+                [album_id] INTEGER NOT NULL,
+                [sequence] TEXT,
+                PRIMARY KEY ([title], [album_id]));"""
     )
 
 
@@ -222,6 +246,7 @@ _STEPS: Final[tuple[Callable[[DatabaseConnection], Awaitable[None]], ...]] = (
     _create_album_series_hidden,
     _share_release_group_metadata,
     _repair_albums_built_from_another_album,
+    _create_album_series_editing,
 )
 
 

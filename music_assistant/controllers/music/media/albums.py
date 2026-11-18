@@ -43,6 +43,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS
+from music_assistant.controllers.music.custom_migrations import DB_TABLE_ALBUM_SERIES_EXCLUSIONS
 from music_assistant.controllers.music.helpers import (
     fill_track_from_recording,
     metadata_for_update,
@@ -89,7 +90,7 @@ from music_assistant.providers.musicbrainz.provider import (
     release_matches_album,
 )
 
-from .album_groups import AlbumGroupsMixin
+from .album_series import AlbumSeriesMixin
 from .album_tracks import AlbumListing, album_listing, album_track_backfills, mapped_album_listing
 from .base import EXTERNAL_ID_LOOKUP_ERRORS, MAX_EXTERNAL_ID_MATCH_LOOKUPS, MediaControllerBase
 
@@ -130,7 +131,7 @@ class _BaseTracksMemo:
     tracks: list[Track] | None = None
 
 
-class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
+class AlbumsController(AlbumSeriesMixin, MediaControllerBase[Album]):
     """Controller managing MediaItems of type Album."""
 
     db_table = DB_TABLE_ALBUMS
@@ -509,6 +510,8 @@ class AlbumsController(AlbumGroupsMixin, MediaControllerBase[Album]):
         await self.mass.music.database.delete(DB_TABLE_ALBUM_TRACKS, {"album_id": db_id})
         # delete entry(s) from album artists table
         await self.mass.music.database.delete(DB_TABLE_ALBUM_ARTISTS, {"album_id": db_id})
+        # and the series it was removed from
+        await self.mass.music.database.delete(DB_TABLE_ALBUM_SERIES_EXCLUSIONS, {"album_id": db_id})
 
     async def set_release_group(
         self,

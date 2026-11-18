@@ -1,5 +1,6 @@
 """Helpers for collections."""
 
+import math
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -51,6 +52,64 @@ def merge_item_collections(
             continue
         merged[collection.title] = collection
     return UniqueList(merged.values())
+
+
+def set_item_collection(
+    current: Iterable[MediaItemCollection] | None,
+    title: str,
+    sequence: float | str | None,
+) -> UniqueList[MediaItemCollection]:
+    """
+    Put an item in a collection at the given number, or give it that number when it is in.
+
+    Unlike a merge, the number given always wins: None takes the number away.
+
+    :param current: The collections the item is part of now.
+    :param title: The title of the collection.
+    :param sequence: The number of the item in the collection, if any.
+    """
+    collections = [collection for collection in current or () if collection.title != title]
+    collections.append(MediaItemCollection(title=title, sequence=sequence))
+    return UniqueList(collections)
+
+
+def remove_item_collections(
+    current: Iterable[MediaItemCollection] | None,
+    titles: Iterable[str],
+) -> UniqueList[MediaItemCollection]:
+    """
+    Take an item out of the collections with these titles.
+
+    :param current: The collections the item is part of now.
+    :param titles: The titles of the collections to take the item out of.
+    """
+    removed = set(titles)
+    return UniqueList(collection for collection in current or () if collection.title not in removed)
+
+
+def parse_collection_sequence(sequence: str | float | None) -> float | str | None:
+    """
+    Return the number of an item in a collection as it is stored: a number when it is one.
+
+    A whole number is stored as an int, so it shows as "3" and not "3.0".
+
+    :param sequence: The number as it was typed, or None for no number.
+    """
+    if sequence is None:
+        return None
+    if isinstance(sequence, (int, float)):
+        number = float(sequence)
+    else:
+        text = sequence.strip()
+        if not text:
+            return None
+        try:
+            number = float(text.replace(",", "."))
+        except ValueError:
+            return text
+        if not math.isfinite(number):
+            return text
+    return int(number) if number.is_integer() else number
 
 
 def share_collections[K](
