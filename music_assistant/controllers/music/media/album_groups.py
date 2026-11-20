@@ -228,8 +228,14 @@ class AlbumGroupsMixin(_Base):
             )
 
         result = await _fetch(search, parts, joins, limit, offset)
-        remaining = limit - len(result)
-        if search and len(result) < _SEARCH_ARTIST_FALLBACK_THRESHOLD and not offset and remaining:
+        # a limit of 0 lists everything, so the fallback is not capped either
+        remaining = limit - len(result) if limit else 0
+        if (
+            search
+            and len(result) < _SEARCH_ARTIST_FALLBACK_THRESHOLD
+            and not offset
+            and (remaining > 0 or not limit)
+        ):
             # a search also lists the albums of the artists it matches, after the title matches
             artist_clause = search_name_match_clause(
                 "artists", create_safe_string(search, True, True), "search_artist", params
@@ -243,7 +249,8 @@ class AlbumGroupsMixin(_Base):
             result = await self._collapse_groups(
                 [*result, *(item for item in by_artist if item.uri not in known_uris)]
             )
-            result = result[:limit]
+            if limit:
+                result = result[:limit]
         return result
 
     async def album_group_count(
@@ -444,7 +451,7 @@ class AlbumGroupsMixin(_Base):
         favorite: bool | None = None,
         sort_field: SortField | None = None,
         sort_direction: SortDirection | None = None,
-    ) -> "MediaCollection[Album]":
+    ) -> MediaCollection[Album]:
         """Return the series with one album per release group, keeping the representative."""
         result = await super().get_collection(
             item_id,
@@ -483,7 +490,6 @@ class AlbumGroupsMixin(_Base):
         series = [
             item
             for item in await self.album_group_items(
-                search=search,
                 limit=0,
                 sort_field=sort_field,
                 sort_direction=sort_direction,
@@ -493,7 +499,40 @@ class AlbumGroupsMixin(_Base):
             )
             if isinstance(item, MediaCollection) and (item.name in hidden_titles) == hidden
         ]
+        if search:
+            series = await self._series_matching(series, search)
         return series[offset : offset + limit] if limit else series[offset:]
+
+    async def _series_matching(
+        self, series: list[MediaCollection[Album]], search: str
+    ) -> list[MediaCollection[Album]]:
+        """
+        Keep the series whose name, or the name or artist of one of its albums, matches.
+
+        A series is kept whole: its albums that do not match stay in it.
+
+        :param series: The series to filter, in the order they are listed.
+        :param search: The search text, as the library listings take it.
+        """
+        matching_names = {
+            item.name
+            for item in await self.album_group_items(
+                search=search, limit=0, collapse_collections=True, series_filter="series"
+            )
+            if isinstance(item, MediaCollection)
+        }
+        matching_albums = {
+            album.item_id
+            for album in await self.album_group_items(
+                search=search, limit=0, series_filter="series"
+            )
+        }
+        return [
+            item
+            for item in series
+            if item.name in matching_names
+            or any(album.item_id in matching_albums for album in item.items)
+        ]
 
     async def set_album_series_hidden(self, item_id: str, hidden: bool) -> None:
         """

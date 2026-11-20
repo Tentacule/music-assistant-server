@@ -469,3 +469,40 @@ async def test_custom_migration_failure_does_not_raise() -> None:
 
     logger.exception.assert_called_once()
     database.insert_or_replace.assert_not_awaited()
+
+
+async def test_series_list_search_matches_the_series_name(
+    music_mass_with_cache: MusicAssistant,
+) -> None:
+    """A search lists the series whose name matches, with all their albums."""
+    await _add_series(music_mass_with_cache, "1001 Albums", "Wee Small Hours", "Kind of Blue")
+    await _add_series(music_mass_with_cache, "Cycle", "Cycle One")
+    albums = music_mass_with_cache.music.albums
+
+    found = await albums.album_series(search="1001 Albums")
+
+    assert [item.name for item in found] == ["1001 Albums"]
+    assert [item.name for item in found[0].items] == ["Wee Small Hours", "Kind of Blue"]
+
+
+async def test_series_list_search_matches_an_album_of_the_series(
+    music_mass_with_cache: MusicAssistant,
+) -> None:
+    """A search lists the series one of whose albums matches, with all their albums."""
+    await _add_series(music_mass_with_cache, "Saga", "Saga One", "Kind of Blue")
+    await _add_series(music_mass_with_cache, "Cycle", "Cycle One")
+    albums = music_mass_with_cache.music.albums
+
+    found = await albums.album_series(search="Kind of Blue")
+
+    assert [item.name for item in found] == ["Saga"]
+    assert [item.name for item in found[0].items] == ["Saga One", "Kind of Blue"]
+
+
+async def test_unlimited_search_keeps_its_results(music_mass_with_cache: MusicAssistant) -> None:
+    """A search listing everything (limit 0) keeps its matches after the artist fallback."""
+    await _add_album(music_mass_with_cache, "x1", "Standalone Blue", None, 100)
+
+    found = await music_mass_with_cache.music.albums.album_group_items(search="Blue", limit=0)
+
+    assert [item.name for item in found] == ["Standalone Blue"]
