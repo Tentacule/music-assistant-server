@@ -44,12 +44,14 @@ as `BackendEvent`s through a single async callback and answers `get_stream_sourc
 
 ### Shared provider behaviors (backend-independent)
 
-- **AudioSource item**: one live item under the global "Live Inputs" node, played through
+- **AudioSource item**: one live item listed under this provider when browsing, played through
   the standard `play_media` flow (`exclusive`, `allow_external_trigger`, `can_initiate`).
   Starting it from MA resumes the last known Spotify context on this device.
 - **Externally triggered playback**: a `PLAYING` event fires a debounced `play_media` on
   the target player (an explicitly selected player, else the daemon's own connected
-  player).
+  player). When that player is not available (and no power control wakes it), the
+  Spotify session is released instead, so the app does not show playback on a silent
+  speaker.
 - **Taking playback back**: when the user moved the active device away in the Spotify app
   and presses play in MA, the last seen context is (re)started on this device — the
   backend's `play()` contract includes claiming active device status.
@@ -93,13 +95,14 @@ options: every selected player gets its own daemon with its own credentials/cach
 directory (keyed by `{instance_id}_{safe_player_id}`), its own zeroconf advertisement and
 its own AudioSource (`item_id` = player id). The advertised device name follows the
 connected player's name through a template setting, so a rename restarts that daemon with
-the new name. Players register after plugins load: daemons start (and stop) from player
-lifecycle events through a lock-serialized reconcile. All daemons share the Soloist
+the new name. A connected player usually becomes available only after the plugin loaded, once its device is
+found: daemons start (and stop) from the players' availability and removal events through a
+lock-serialized reconcile. All daemons share the Soloist
 managed binary install and API key.
 
 ## Related documentation
 
-- **PluginProvider contract:** `music_assistant/models/plugin.py`
+- **AudioSource contract:** `AudioSourceMixin` in `music_assistant/models/media_capabilities.py`
 - **AudioSource MediaItem:** `music_assistant_models.media_items.AudioSource`
 
 ---
