@@ -254,6 +254,8 @@ def _music_controller(album: Album | None = None) -> tuple[MusicController, Asyn
     controller.mass = MagicMock()
     controller.mass.get_provider.return_value = None
     controller.albums = AlbumsController.__new__(AlbumsController)
+    # the fork adds the release group metadata of the album, through the same mass
+    controller.albums.mass = controller.mass
     resolve = AsyncMock(return_value=album)
     controller.albums._get_external_item = resolve  # type: ignore[method-assign, misc]
     return controller, resolve
