@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from enum import StrEnum
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
@@ -17,6 +16,7 @@ from music_assistant_models.media_items import (
     MusicVideo,
     MusicVideoSummary,
     ProviderMapping,
+    Track,
 )
 
 from music_assistant.controllers.music.custom_migrations import (
@@ -30,6 +30,7 @@ from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
 
 from .base import MediaControllerBase
+from .music_video_matching import MusicVideoMatcher, MusicVideoTrackLink
 from .music_video_playback import MusicVideoPlayback, MusicVideoPlaybackInfo
 
 if TYPE_CHECKING:
@@ -38,17 +39,6 @@ if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
 
     from music_assistant import MusicAssistant
-
-
-class MusicVideoTrackLink(StrEnum):
-    """How a music video was linked to a library track."""
-
-    ISRC = "isrc"
-    MB_RECORDING = "mb_recording"
-    NAME = "name"
-    MANUAL = "manual"
-    # a link the user removed, kept so the automatic matching does not add it back
-    EXCLUDED = "excluded"
 
 
 # the links a new automatic match may not replace
@@ -86,9 +76,18 @@ class MusicVideosController(MediaControllerBase[MusicVideo]):
         self.mass.register_api_command(
             f"music/{api_base}/video_url", self.video_url, required_scope=Scope.LIBRARY_READ
         )
+        self.mass.register_api_command(
+            f"music/{api_base}/match_tracks",
+            self.match_tracks,
+            required_scope=Scope.LIBRARY_WRITE,
+        )
         self.playback = MusicVideoPlayback(mass)
+        self.matcher = MusicVideoMatcher(mass)
         # links to a removed artist or track would point at nothing
         self.mass.subscribe(self._on_media_item_deleted, EventType.MEDIA_ITEM_DELETED)
+        # a sync adds items without events, so its end runs the matching of what it added
+        self.mass.subscribe(self._on_media_item_added, EventType.MEDIA_ITEM_ADDED)
+        self.mass.subscribe(self._on_sync_completed, EventType.MUSIC_SYNC_COMPLETED)
 
     @property
     def base_query(self) -> tuple[str, dict[str, Any]]:
@@ -214,6 +213,19 @@ class MusicVideosController(MediaControllerBase[MusicVideo]):
         """
         music_video = await self.get(item_id, provider_instance_id_or_domain)
         return await self.playback.video_url(music_video)
+
+    async def match_tracks(self, item_id: str | None = None) -> int:
+        """
+        Link library music videos to the library tracks of their recording.
+
+        :param item_id: The library id of one music video, or None for every music video
+            that has no track yet.
+        :return: The number of music videos that got a track.
+        """
+        if item_id is None:
+            return await self.matcher.match_unlinked()
+        video = await self.get_library_item(item_id)
+        return 1 if await self.matcher.match_music_video(video) else 0
 
     async def set_track_link(self, item_id: str, track_id: str) -> MusicVideo:
         """
@@ -462,6 +474,20 @@ class MusicVideosController(MediaControllerBase[MusicVideo]):
         video = await self.get_library_item(db_id)
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, video.uri, video)
         return video
+
+    async def _on_media_item_added(self, event: MassEvent) -> None:
+        """Link a music video or a track added to the library outside a sync."""
+        item = event.data
+        if getattr(item, "provider", None) != "library":
+            return
+        if isinstance(item, MusicVideo):
+            self.mass.create_task(self.matcher.match_music_video(item))
+        elif isinstance(item, Track):
+            self.mass.create_task(self.matcher.match_track(item))
+
+    async def _on_sync_completed(self, event: MassEvent) -> None:
+        """Link the music videos without a track once a library sync is done."""
+        self.mass.create_task(self.matcher.match_unlinked, task_id="music_video_matching")
 
     async def _on_media_item_deleted(self, event: MassEvent) -> None:
         """Remove the links to a library artist or track that was deleted."""
