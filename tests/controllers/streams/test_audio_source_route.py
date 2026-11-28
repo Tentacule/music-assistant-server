@@ -8,6 +8,7 @@ same holds for the direct-PCM consumers, which never reach the route at all.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import Any
@@ -25,6 +26,8 @@ from music_assistant.controllers.players.audio_sources import (
 )
 from music_assistant.controllers.players.state_updates import PLAYER_UPDATE_DEBOUNCE
 from music_assistant.controllers.streams import StreamsController
+from music_assistant.helpers.audio import calculate_content_length
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 from music_assistant.models.player import PlayerMedia
 from music_assistant.models.plugin import PluginProvider
 
@@ -52,6 +55,10 @@ class _SessionStore(PlayerAudioSourcesMixin):
         self.logger = MagicMock()
         self.updated_players: list[str] = []
 
+    def get_player(self, *_args: object) -> Any:
+        """Return a player for any id."""
+        return MagicMock()
+
     def trigger_player_update(
         self,
         player_id: str,
@@ -73,6 +80,13 @@ def _controller(
     """
     ctrl = StreamsController.__new__(StreamsController)
     ctrl.mass = MagicMock()
+    # tasks start eagerly, as in production: a source taken off a player whose lock is free
+    # is released before the call that released it returns
+    ctrl.mass.create_task = MagicMock(
+        side_effect=lambda coro, **_kwargs: asyncio.Task(
+            coro, loop=asyncio.get_running_loop(), eager_start=True
+        )
+    )
     ctrl.logger = MagicMock()
     ctrl._active_output_streams = 0
     # a truthy MagicMock here would send _log_request down the verbose path
@@ -233,7 +247,7 @@ async def test_http_output_is_registered_to_the_source_session(
     ctrl.audio.get_audio_source_stream.return_value = "audio-input"
     ctrl.audio.get_player_output_plan.return_value = SimpleNamespace(filter_params=[])
     player.group_members = ["member-1"]
-    player.get_config_value.return_value = False
+    player.requires_content_length = False
     response = MagicMock()
     response.prepare = AsyncMock()
     monkeypatch.setattr(web, "StreamResponse", MagicMock(return_value=response))
@@ -262,6 +276,34 @@ async def test_http_output_is_registered_to_the_source_session(
         queue_id=session.player_id,
         session_id=session.playback_session_id,
     )
+
+
+@pytest.mark.parametrize("requires_content_length", [True, False])
+async def test_a_live_source_declares_a_length_to_a_player_that_needs_one(
+    monkeypatch: pytest.MonkeyPatch, requires_content_length: bool
+) -> None:
+    """A player that needs a content length gets one a live source never reaches."""
+    session = _session()
+    ctrl, provider, player, _store = _controller(session)
+    ctrl.audio = MagicMock()
+    output_format = AudioFormat(content_type=ContentType.FLAC, sample_rate=48000, bit_depth=24)
+    ctrl.audio.select_pcm_format = AsyncMock(return_value=output_format)
+    ctrl.audio.get_output_format = AsyncMock(return_value=output_format)
+    ctrl.audio.get_player_output_plan.return_value = SimpleNamespace(filter_params=[])
+    player.requires_content_length = requires_content_length
+    response = SimpleNamespace(prepare=AsyncMock(), content_type=None, content_length=None)
+    monkeypatch.setattr(web, "StreamResponse", MagicMock(return_value=response))
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.controller.get_ffmpeg_stream",
+        MagicMock(return_value="encoded-audio"),
+    )
+
+    await ctrl._prepare_audio_source_stream(
+        SimpleNamespace(match_info={"fmt": "flac"}), player, session, MagicMock(), provider, "tok-1"
+    )
+
+    never_reached = calculate_content_length(output_format, 12 * 3600)
+    assert response.content_length == (never_reached if requires_content_length else None)
 
 
 def test_a_direct_pcm_request_from_a_superseded_session_is_refused() -> None:
@@ -329,6 +371,88 @@ async def test_a_plugin_refusing_the_stream_takes_the_source_off_the_player() ->
     with pytest.raises(web.HTTPNotFound):
         await ctrl.serve_audio_source_stream(_request(session_id=session.playback_session_id))
 
+    ctrl.mass.players.deselect_source.assert_awaited_once_with(
+        OWNER_ID,
+        provider_instance_id=session.provider_instance_id,
+        source_id=session.source_id,
+        playback_session_id=session.playback_session_id,
+    )
+
+
+async def test_a_plugin_refusing_a_pcm_consumer_is_logged_once_as_a_refusal() -> None:
+    """
+    A PCM consumer gets the refusal as such, logged in the line the route logs.
+
+    It has no response to answer the refusal with, so it must be able to tell it from a
+    failure; the source is still released.
+    """
+    session = _session()
+    ctrl, provider, _player, _store = _controller(session)
+    refusal = RuntimeError("switching disabled")
+    provider.on_source_selected = AsyncMock(side_effect=refusal)
+    media = PlayerMedia(
+        uri="x://audio_source/main",
+        media_type=MediaType.AUDIO_SOURCE,
+        source_id=OWNER_ID,
+        queue_session_id=session.playback_session_id,
+    )
+
+    with pytest.raises(AudioSourceRefusedError, match="switching disabled"):
+        await ctrl.open_audio_source_stream(media, CONSUMER_ID)
+
+    ctrl.logger.info.assert_called_once_with(
+        "AudioSource %s aborted stream for player %s: %s", session.source_id, CONSUMER_ID, refusal
+    )
+    ctrl.mass.players.deselect_source.assert_awaited_once_with(
+        OWNER_ID,
+        provider_instance_id=session.provider_instance_id,
+        source_id=session.source_id,
+        playback_session_id=session.playback_session_id,
+    )
+
+
+@pytest.mark.parametrize(
+    ("consumer", "refusal"),
+    [("pcm", AudioSourceRefusedError), ("http", web.HTTPNotFound)],
+    ids=["pcm", "http"],
+)
+async def test_a_refusal_reaches_the_consumer_before_the_source_is_released(
+    consumer: str, refusal: type[Exception]
+) -> None:
+    """
+    A consumer gets a refusal at once, while the source still waits to be taken off the player.
+
+    Taking it off waits for the player's lock, which the command that started the source
+    holds until its consumer gives up, such as an AirPlay start waiting for the first audio.
+    """
+    session = _session()
+    ctrl, provider, _player, _store = _controller(session)
+    provider.on_source_selected = AsyncMock(side_effect=RuntimeError("switching disabled"))
+    command_done = asyncio.Event()
+    released = asyncio.Event()
+
+    async def release_once_the_command_is_done(*_args: Any, **_kwargs: Any) -> None:
+        await command_done.wait()
+        released.set()
+
+    ctrl.mass.players.deselect_source = AsyncMock(side_effect=release_once_the_command_is_done)
+    if consumer == "pcm":
+        media = PlayerMedia(
+            uri="x://audio_source/main",
+            media_type=MediaType.AUDIO_SOURCE,
+            source_id=OWNER_ID,
+            queue_session_id=session.playback_session_id,
+        )
+        refused = ctrl.open_audio_source_stream(media, CONSUMER_ID)
+    else:
+        refused = ctrl.serve_audio_source_stream(_request(session_id=session.playback_session_id))
+
+    with pytest.raises(refusal):
+        await asyncio.wait_for(refused, 1)
+    assert not released.is_set()
+
+    command_done.set()
+    await asyncio.wait_for(released.wait(), 1)
     ctrl.mass.players.deselect_source.assert_awaited_once_with(
         OWNER_ID,
         provider_instance_id=session.provider_instance_id,

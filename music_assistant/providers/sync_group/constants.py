@@ -28,6 +28,11 @@ PLAYBACK_START_TIMEOUT: Final[float] = 5.0
 # instead of restarting for every removal.
 REFORM_DEBOUNCE_SECONDS: Final[float] = 2.0
 
+# How long a member may keep reporting the leader it was released from, also when that
+# leader did not answer the release. A Sonos leader that gets a group command right after
+# its AirPlay output stopped answers none for some 40 seconds, and lets its members go then.
+STUCK_MEMBER_TIMEOUT: Final[float] = 30.0
+
 CONF_ENTRY_SGP_NOTE = ConfigEntry(
     key="sgp_note",
     type=ConfigEntryType.ALERT,
@@ -57,15 +62,3 @@ FEATURES_FROM_LEADER: Final[set[PlayerFeature]] = {
     PlayerFeature.SEEK,
     PlayerFeature.NEXT_PREVIOUS,
 }
-
-
-# Provider domains whose live sync session can survive removal of the current
-# leader (the protocol promotes another sync_client to leader at the protocol
-# level). When the active session is owned by one of these providers the sync
-# group can do a seamless leader handoff; otherwise it must dissolve and
-# re-form (with a brief audio gap) on leader change.
-PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH: Final[tuple[str, ...]] = (
-    "airplay",
-    "snapcast",
-    "sendspin",
-)

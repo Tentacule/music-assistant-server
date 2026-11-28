@@ -273,7 +273,11 @@ def has_dynamic_source(source_items: list[MediaItemType]) -> bool:
 
 
 def build_queue_item(
-    queue_id: str, media_item: PlayableMediaItemType, origin: QueueItemOrigin | None = None
+    queue_id: str,
+    media_item: PlayableMediaItemType,
+    *,
+    userid: str | None,
+    origin: QueueItemOrigin | None = None,
 ) -> QueueItem:
     """
     Build a QueueItem for enqueueing, keeping its media item slim.
@@ -285,10 +289,12 @@ def build_queue_item(
 
     :param queue_id: The id of the queue the item is created for.
     :param media_item: The source media item to enqueue.
+    :param userid: The user a play of the item counts for; None for anonymous playback.
     :param origin: Where the item was played from, when it was played from a container.
     """
     queue_item = QueueItem.from_media_item(queue_id, media_item)
     queue_item.origin = origin
+    queue_item.userid = userid
     if isinstance(queue_item.media_item, Track):
         # the list-row artwork is already captured on QueueItem.image, so dropping the
         # track's metadata here does not lose anything the queue listing still needs
@@ -446,19 +452,22 @@ def get_sleep_timer_stop_position(
     return item_end
 
 
-def committed_index(queue: PlayerQueue) -> int | None:
+def committed_index(queue: PlayerQueue, next_item_replaceable: bool) -> int | None:
     """
     Return the highest queue index the player owns, or None if it owns none.
 
-    It holds both the playing track and the one handed to it for the transition. Nothing at or
-    below this index can be reordered: the player keeps playing what it was given whatever the
-    queue says, and the buffered position does not follow items that move around it.
+    It holds both the playing track and the one handed to it for the transition, unless the
+    player can still replace that one. Nothing at or below this index can be reordered: the
+    player keeps playing what it was given whatever the queue says, and the buffered position
+    does not follow items that move around it.
 
     :param queue: The queue to resolve the index for.
+    :param next_item_replaceable: The player can still replace the item handed to it for the
+        transition.
     """
     if queue.current_index is None:
         return queue.index_in_buffer
-    if queue.index_in_buffer is None:
+    if queue.index_in_buffer is None or next_item_replaceable:
         return queue.current_index
     # repeat wraps the buffered index back to the front while the last track plays
     return max(queue.current_index, queue.index_in_buffer)

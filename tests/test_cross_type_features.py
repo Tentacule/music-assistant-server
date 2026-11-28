@@ -872,6 +872,9 @@ def _set_players(mass: Mock, *players: Mock) -> None:
     mass.players.get_audio_source_name.side_effect = partial(
         PlayerController.get_audio_source_name, mass.players
     )
+    mass.players.may_use_audio_source.side_effect = partial(
+        PlayerController.may_use_audio_source, mass.players
+    )
 
 
 def _audio_source_browse_controller() -> tuple[MusicController, PluginProvider, PluginProvider]:
@@ -990,12 +993,8 @@ async def test_browse_provider_level_without_player_scope_lists_all_sources() ->
 async def test_browse_bound_sources_honor_the_user_player_filter() -> None:
     """A restricted user only sees bound sources of players their filter allows."""
     controller, _bound, _unbound = _audio_source_browse_controller()
-    restricted_user = Mock(player_filter=["office"])
 
-    with patch(
-        "music_assistant.controllers.music.controller.get_current_user",
-        return_value=restricted_user,
-    ):
+    with as_user(["office"]):
         unscoped = await controller.browse(path="live_sources://")
         hidden_scope = await controller.browse(path="live_sources://", player_id="kitchen")
 
@@ -1207,11 +1206,14 @@ async def test_global_search_includes_plugin_providers_with_search() -> None:
     mass.cache.set = AsyncMock(return_value=None)
     plugin_prov = _make_prov("plug_a", ProviderType.PLUGIN, {ProviderFeature.SEARCH})
     mass.get_providers_supporting_feature.return_value = [plugin_prov]
+    music_prov = _make_prov("m_a", ProviderType.MUSIC, {ProviderFeature.SEARCH})
+    music_prov.domain = "music_service"
+    music_prov.is_streaming_provider = True
+    mass.providers = [music_prov, plugin_prov]
 
     controller = MusicController.__new__(MusicController)
     controller.mass = mass
     controller.domain = "music"
-    controller.get_unique_providers = Mock(return_value=["m_a"])  # type: ignore[method-assign]
     controller.search_library = AsyncMock(return_value=SearchResults())  # type: ignore[method-assign]
     controller._search_provider = AsyncMock(return_value=SearchResults())  # type: ignore[method-assign]
 

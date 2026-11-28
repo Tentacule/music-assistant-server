@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_FAKE
-from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
+from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, QueueOption
 from music_assistant_models.errors import (
     InsufficientPermissions,
     MusicAssistantError,
@@ -2393,7 +2393,7 @@ async def test_a_new_start_after_a_stop_waits_for_what_is_left_of_the_startup(
 
 
 async def _paused_without_den(
-    scenario: Scenario,
+    scenario: Scenario, can_pause: bool = True
 ) -> tuple[str, list[FakeProtocol], list[str], FakePowerControl]:
     """
     Let the sync group Downstairs be paused on Kitchen and Office, with Den switched off.
@@ -2403,9 +2403,16 @@ async def _paused_without_den(
     to start up, and the queue has the default pause timeout. Two seconds have passed since
     the pause.
 
+    :param can_pause: Whether the speakers have a pause of their own; without one the pause
+        stops them, and the group shows the pause until the pause timeout.
     :return: The id of the group, the speakers, the ids of their players and the plug of Den.
     """
     group_id, speakers, player_ids, plug = await _playing_without_den(scenario, "fixed sync group")
+    if not can_pause:
+        for speaker in speakers:
+            await scenario.report(
+                speaker, supported_features=speaker.supported_features - {PlayerFeature.PAUSE}
+            )
     await _halt(scenario, group_id, "paused")
     assert _state(scenario, group_id).playback_state == PlaybackState.PAUSED
     for speaker in speakers:
@@ -2413,8 +2420,9 @@ async def _paused_without_den(
     return group_id, speakers, player_ids, plug
 
 
+@pytest.mark.parametrize("can_pause", [True, False], ids=["has a pause", "stops to pause"])
 async def test_a_play_of_a_paused_group_that_waits_for_a_member_outlasts_the_pause_timeout(
-    scenario: Scenario,
+    scenario: Scenario, can_pause: bool
 ) -> None:
     """
     A play of a paused group waits for its member past the pause timeout, and then starts.
@@ -2424,8 +2432,10 @@ async def test_a_play_of_a_paused_group_that_waits_for_a_member_outlasts_the_pau
     takes longer than what is left of the pause timeout. The group is not stopped when that
     timeout ends: it stays paused and the play keeps waiting. Once Den has started up the
     group starts once, on all three, and it is not stopped afterwards either.
+
+    :param can_pause: Whether the speakers have a pause of their own.
     """
-    group_id, speakers, player_ids, plug = await _paused_without_den(scenario)
+    group_id, speakers, player_ids, plug = await _paused_without_den(scenario, can_pause)
     await scenario.advance(8)
 
     play = await scenario.command(scenario.mass.players.cmd_play(group_id))
@@ -2448,8 +2458,9 @@ async def test_a_play_of_a_paused_group_that_waits_for_a_member_outlasts_the_pau
     await _stop(scenario, group_id)
 
 
+@pytest.mark.parametrize("can_pause", [True, False], ids=["has a pause", "stops to pause"])
 async def test_a_paused_group_that_nobody_plays_is_stopped_at_the_pause_timeout(
-    scenario: Scenario,
+    scenario: Scenario, can_pause: bool
 ) -> None:
     """
     A paused group that gets no play is stopped when the pause timeout ends.
@@ -2457,8 +2468,10 @@ async def test_a_paused_group_that_nobody_plays_is_stopped_at_the_pause_timeout(
     The sync group is paused on Kitchen and Office, without Den. Nobody plays it: it is
     still paused a second before the pause timeout ends and stopped after it, and Den's plug
     stays off.
+
+    :param can_pause: Whether the speakers have a pause of their own.
     """
-    group_id, _, _, plug = await _paused_without_den(scenario)
+    group_id, _, _, plug = await _paused_without_den(scenario, can_pause)
 
     await scenario.advance(DEFAULT_PAUSE_TIMEOUT - 3)
     assert _state(scenario, group_id).playback_state == PlaybackState.PAUSED
@@ -2521,7 +2534,7 @@ async def _rendered_clip(render: AnnouncementRender) -> None:
 
 
 async def _announce(
-    scenario: Scenario, player_id: str, group_id: str, speakers: list[FakeProtocol]
+    scenario: Scenario, player_id: str, group_id: str | None, speakers: list[FakeProtocol]
 ) -> None:
     """
     Play an announcement on a player with the real controller, and let the clip play out.
@@ -2530,7 +2543,7 @@ async def _announce(
     it was told to play while the announcement of the group or of the player runs.
 
     :param player_id: The player the announcement is sent to.
-    :param group_id: The group player of the speakers.
+    :param group_id: The group player of the speakers, None when they have none.
     :param speakers: The speakers that may play the clip.
     """
 
@@ -2539,7 +2552,7 @@ async def _announce(
 
         async def _play(media: PlayerMedia) -> None:
             await play_media(media)
-            group = scenario.mass.players.get_player(group_id)
+            group = scenario.mass.players.get_player(group_id) if group_id else None
             if media.media_type == MediaType.ANNOUNCEMENT or (
                 group is not None and group.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
             ):

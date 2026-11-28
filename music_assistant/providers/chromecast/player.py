@@ -28,6 +28,7 @@ from pychromecast import IDLE_APP_ID
 from pychromecast.const import CAST_TYPE_CHROMECAST
 from pychromecast.controllers.media import (
     MEDIA_PLAYER_ERROR_CODES,
+    STREAM_TYPE_BUFFERED,
     STREAM_TYPE_LIVE,
 )
 from pychromecast.controllers.multizone import MultizoneController
@@ -38,7 +39,7 @@ from pychromecast.socket_client import (
     ConnectionStatus,
 )
 
-from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
+from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL, PlaybackQuality
 from music_assistant.helpers.player import served_duration
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
@@ -58,7 +59,6 @@ from .constants import (
     DASHBOARD_KEEPALIVE_SUFFIXES,
     MASS_APP_ID,
     SENDSPIN_CAST_APP_ID,
-    get_cast_output_codec_entry,
 )
 from .helpers import (
     CastStatusListener,
@@ -172,18 +172,25 @@ class ChromecastPlayer(PlayerProtocol):
         self._attr_device_info.add_identifier(IdentifierType.UUID, str(self.cast_info.uuid))
         self._attr_device_info.add_identifier(IdentifierType.CAST_UUID, str(self.cast_info.uuid))
 
+    @property
+    def fetches_files(self) -> bool:
+        """Return True: a receiver pauses, resumes and seeks by asking for a part of a track."""
+        return True
+
+    @property
+    def default_playback_quality(self) -> PlaybackQuality:
+        """Return the playback quality level to use when the user picked none."""
+        return PlaybackQuality.COMPRESSED
+
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        output_codec_entry = get_cast_output_codec_entry(self.cast_info.model_name)
         if self.type == PlayerType.GROUP:
             return [
-                output_codec_entry,
                 *CAST_PLAYER_CONFIG_ENTRIES,
                 CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
             ]
 
         return [
-            output_codec_entry,
             *CAST_PLAYER_CONFIG_ENTRIES,
             CONF_ENTRY_SAMPLE_RATES_CAST,
             CONF_ENTRY_DEFER_IDLE_VOLUME,
@@ -1078,9 +1085,14 @@ class ChromecastPlayer(PlayerProtocol):
 
     def _create_cc_media_item(self, media: PlayerMedia, stream_url: str) -> dict[str, Any]:
         """Create CC media item from MA PlayerMedia."""
-        # Always use LIVE stream type because MA streams are real-time encoded by FFmpeg,
-        # so they are not seekable and don't have a known content length.
-        stream_type = STREAM_TYPE_LIVE
+        is_flow = "/flow/" in stream_url
+        # a flow stream carries on into the next track, so it has no length of its own
+        duration = None if is_flow else served_duration(media, stream_url)
+        # receivers show a "LIVE" label for a live stream, which only fits media without an end
+        has_end = is_flow or (
+            duration is not None
+            and media.media_type not in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
+        )
         metadata = {
             "metadataType": 3,
             "albumName": media.album or "",
@@ -1097,9 +1109,9 @@ class ChromecastPlayer(PlayerProtocol):
                 "queue_item_id": media.queue_item_id or stream_url,
             },
             "contentType": f"audio/{file_ext}",
-            "streamType": stream_type,
+            "streamType": STREAM_TYPE_BUFFERED if has_end else STREAM_TYPE_LIVE,
             "metadata": metadata,
-            "duration": served_duration(media, stream_url),
+            "duration": duration,
         }
 
     def _handle_receiver_command(self, command: str) -> None:

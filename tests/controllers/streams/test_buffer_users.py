@@ -538,8 +538,8 @@ async def _request_in_setup(
     await rig.delivered(prepared)
     request, connection = _start_request(rig, prepared)
     # this speaker wants a content length, which the route looks up before it streams
-    rig.mass.players.get_output_protocol.return_value.get_config_value.return_value = True
-    await asyncio.wait_for(setting_up.wait(), 1)
+    rig.mass.players.get_output_protocol.return_value.requires_content_length = True
+    await asyncio.wait_for(setting_up.wait(), 10)
     await rig.queues._enqueue_with_option(QUEUE_ID, [rig.track("track 5")], QueueOption.NEXT)
     await rig.settle()
     return request, connection, capture, go_on
@@ -729,7 +729,7 @@ class _Connection:
 
     async def next_write(self) -> None:
         """Wait until the response tries to write its next chunk to the speaker."""
-        await asyncio.wait_for(self._pending.get(), 1)
+        await asyncio.wait_for(self._pending.get(), 10)
 
     def deliver(self) -> None:
         """Let the waiting write reach the speaker."""
@@ -777,7 +777,7 @@ def _start_request(
     player = MagicMock()
     player.stop_called = False
     player.needs_gapless_burst = False
-    player.get_config_value.return_value = False
+    player.requires_content_length = False
     rig.mass.players.get_output_protocol.return_value = player
     rig.audio.select_pcm_format = AsyncMock(return_value=PCM_FORMAT)  # type: ignore[method-assign]
     rig.audio.get_output_format = AsyncMock(  # type: ignore[method-assign]
@@ -796,6 +796,7 @@ def _start_request(
     for helper in ("_requested_item_ids", "_ended_item_ids", "_release_abandoned_item_sources"):
         setattr(ctrl, helper, MethodType(getattr(StreamsController, helper), ctrl))
     ctrl.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
+    ctrl.serves_as_file.return_value = False
     ctrl.mass = rig.mass
     ctrl.audio = rig.audio
     connection = _Connection()

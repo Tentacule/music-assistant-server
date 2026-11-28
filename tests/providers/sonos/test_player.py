@@ -16,11 +16,22 @@ from aiosonos.exceptions import CannotConnect, FailedCommand
 from aiosonos.group import PlaybackActions
 from music_assistant_models.config_entries import PlayerConfig
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
-from music_assistant_models.enums import IdentifierType, PlaybackState, ProtocolRole, RepeatMode
+from music_assistant_models.enums import (
+    ContentType,
+    IdentifierType,
+    MediaType,
+    PlaybackState,
+    ProtocolRole,
+    RepeatMode,
+)
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import DeviceInfo, OutputProtocol, PlayerMedia
+from music_assistant_models.player_queue import PlayerQueue
+from music_assistant_models.queue_item import QueueItem
 
-from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT
+from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT, PlaybackQuality
+from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.player_protocol import AnnouncementFeature
@@ -32,7 +43,7 @@ from music_assistant.providers.sonos.const import (
     SOURCE_TV,
     UPNP_PORT,
 )
-from music_assistant.providers.sonos.player import SonosPlayer, _is_wakeable
+from music_assistant.providers.sonos.player import SonosPlayer, _has_device_feature
 
 if TYPE_CHECKING:
     from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
@@ -56,21 +67,26 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._listen_task = None
     player.connected = False
     player._connect_lock = asyncio.Lock()
-    player._wakeable = False
+    player._sleeps = False
     player._wol_mac = None
     player._marked_asleep = False
     player._woken_from_sleep = False
     player.cloud_queue_id = None
+    player.group_queue_id = None
+    player._stepping_out = False
+    player._taken_over_item_id = None
     player.cloud_queue_item_generation = 0
     player._window_item_ids = {}
     player._served_bindings = {}
     player._evicted_cloud_queue = None
     player._flow_queue_id = None
+    player._flow_media = None
     player._queue_session_id = None
     player._hand_over_tasks = set()
     player._airplay_rejoin_members = set()
     player._own_airplay_session = False
     player._reported_bonded_ids = set()
+    player._line_in_connected = None
     player.upnp = MagicMock(
         follow=AsyncMock(), unfollow=AsyncMock(), follows=False, player_ip="192.168.1.20"
     )
@@ -926,6 +942,90 @@ def test_the_playing_item_follows_the_audio_served_for_the_reported_position(
     assert caplog.text.count(stale_reports) == 1
 
 
+def _real_queues(queue_id: str, item_ids: list[str]) -> PlayerQueuesController:
+    """Return the real queue controller holding a playing queue of the given items."""
+    queue = PlayerQueue(queue_id=queue_id, active=True, display_name="Den", available=True, items=0)
+    queue.state = PlaybackState.PLAYING
+    data = PlayerQueueData(queue=queue)
+    data.items = [
+        QueueItem(queue_id=queue_id, queue_item_id=x, name=x, duration=180) for x in item_ids
+    ]
+    queue.items = len(data.items)
+    queues = PlayerQueuesController.__new__(PlayerQueuesController)
+    queues.mass = MagicMock()
+    queues._queue_data = {queue_id: data}
+    return queues
+
+
+async def test_a_jump_is_not_undone_by_the_report_on_the_replaced_load() -> None:
+    """
+    Test the queue stays on the item a jump loads until the speaker reports on the new load.
+
+    The speaker answers the load before its events of the new item are applied, so the queue
+    reads what it reported on the replaced load first, and then the old track playing out.
+    """
+    player, mass, client = _connected_player()
+    client.player.is_coordinator = True
+    client.player.group_members = ["sonos_player"]
+    client.player.is_passive = False
+    group = client.player.group
+    group.play_cloud_queue = AsyncMock()
+    group.active_session_id = "session"
+    mass.streams.resolve_stream_url = AsyncMock(return_value="http://ma/single/track2.wav")
+    player._announcement_media = None
+    player.cloud_queue_id = "queue1"
+    queues = _real_queues("queue1", ["track0", "track1", "track2"])
+    mass.player_queues = queues
+    queue = queues._queue_data["queue1"].queue
+    reporting = MagicMock(corrected_elapsed_time=0.0, fake_paused=False)
+    reporting.resolve_output_protocol.return_value = player
+    _report_playing_our_queue(group, cast("str", player.wire_item_id("track0")))
+    player.on_player_event(None)
+    queues._update_current_index_from_player(queue, reporting)
+    assert queue.current_index == 0
+    # the jump moves the queue before it loads the item on the speaker
+    queue.current_index = 2
+
+    with patch.object(SonosPlayer, "flow_mode", new=property(lambda _self: False)):
+        await player.play_media(
+            PlayerMedia(
+                uri="library://track/3",
+                media_type=MediaType.TRACK,
+                source_id="queue1",
+                queue_item_id="track2",
+                queue_session_id="session-2",
+            )
+        )
+    queues._update_current_index_from_player(queue, reporting)
+    assert queue.current_index == 2
+    player.on_player_event(None)
+    queues._update_current_index_from_player(queue, reporting)
+    assert queue.current_index == 2
+
+    _report_playing_our_queue(group, cast("str", player.wire_item_id("track2")))
+    player.on_player_event(None)
+    assert queues._parse_player_current_item_id("queue1", reporting) == "track2"
+
+
+@pytest.mark.parametrize("item_id", ["abc@7", "abc"], ids=["coordinator load", "bare id"])
+def test_a_group_member_names_the_item_of_its_coordinators_load(item_id: str) -> None:
+    """Test a member reads the reported item against the load of its coordinator."""
+    player, mass, client = _connected_player()
+    client.player.is_coordinator = False
+    client.player.group.coordinator_id = "sonos_leader"
+    player.cloud_queue_item_generation = 2
+    leader, _, leader_client = _connected_player()
+    leader.cloud_queue_id = "queue1"
+    leader.cloud_queue_item_generation = 7
+    _report_playing_our_queue(leader_client.player.group, item_id)
+    mass.players.get_protocol.return_value = leader
+
+    player.on_player_event(None)
+
+    assert player.current_media is not None
+    assert player.current_media.queue_item_id == "abc"
+
+
 def test_a_failure_of_an_earlier_load_of_a_track_leaves_its_fresh_source_alone(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -1190,14 +1290,17 @@ def test_a_group_child_does_not_take_over_the_line_in_of_its_coordinator() -> No
     group_parent.client.player.group.playback_state = SonosPlayBackState.PLAYBACK_STATE_PLAYING
     group_parent.client.player.group.position = 0.0
     group_parent.client.player.group.container_type = ContainerType.LINEIN
-    group_parent.client.player.group.playback_metadata = {}
+    group_parent.client.player.group.playback_metadata = {
+        "container": {"type": ContainerType.LINEIN, "lineInSource": "sonos_leader"}
+    }
     mass.players.get_protocol.return_value = group_parent
 
     # twice: a transient entry would only be promoted to its template on the next update
     player.on_player_event(None)
     player.on_player_event(None)
 
-    assert player._attr_active_source == SOURCE_LINE_IN
+    # the member reports the line-in its coordinator plays
+    assert player._attr_active_source == "line_in@sonos_leader"
     assert player._attr_source_list == []
 
 
@@ -1222,7 +1325,13 @@ def _report_airplay(
     group.container_type = ContainerType.AIRPLAY
     group.active_service = None
     group.playback_metadata = {
-        "container": {"name": "AirPlay", "type": "linein.airplay", "service": {"name": "Airplay"}}
+        "container": {"name": "AirPlay", "type": "linein.airplay", "service": {"name": "Airplay"}},
+        "currentItem": {
+            "track": {
+                "name": "Shout",
+                "images": [{"url": "http://192.168.1.20:1400/getaa?u=1"}],
+            }
+        },
     }
     group.playback_actions = _actions({})
     player._airplay_output = MagicMock(  # type: ignore[method-assign]
@@ -1271,6 +1380,29 @@ def test_an_airplay_sender_of_its_own_is_reported_as_the_airplay_source() -> Non
     )
 
 
+def test_our_airplay_session_reports_no_artwork() -> None:
+    """Test the artwork the speaker names for our AirPlay session is not reported."""
+    player, client = _speaker_on_airplay()
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=True)
+
+    # our stream ends before the speaker reports its pause
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=False)
+
+    assert player._attr_current_media is not None
+    assert player._attr_current_media.title == "Shout"
+    assert player._attr_current_media.image_url is None
+
+
+def test_an_airplay_sender_of_its_own_reports_its_artwork() -> None:
+    """Test the artwork of a phone that plays over AirPlay is reported."""
+    player, client = _speaker_on_airplay()
+
+    _report_airplay(player, client, SonosPlayBackState.PLAYBACK_STATE_PLAYING, our_output=False)
+
+    assert player._attr_current_media is not None
+    assert player._attr_current_media.image_url == "http://192.168.1.20:1400/getaa?u=1"
+
+
 def test_a_sender_that_takes_over_while_we_stream_keeps_the_session_ours() -> None:
     """Test a phone that takes the speaker over mid-stream is not told apart from our stream."""
     player, client = _speaker_on_airplay()
@@ -1299,10 +1431,14 @@ def test_other_speaker_events_keep_our_airplay_session() -> None:
     assert player._attr_active_source is None
 
 
-def _wakeable_player() -> tuple[SonosPlayer, MagicMock]:
-    """Create a bound player that advertises Wake-on-LAN support."""
+def _wakeable_player(*, portable: bool = True) -> tuple[SonosPlayer, MagicMock]:
+    """
+    Create a bound player that advertises Wake-on-LAN support.
+
+    :param portable: Whether it is a portable, as opposed to a speaker on mains power.
+    """
     player, mass = _make_player()
-    player._wakeable = True
+    player._sleeps = portable
     player._wol_mac = "C4:38:75:0D:18:9C"
     player._cache = {}
     player._attr_name = "Portable"
@@ -1397,13 +1533,31 @@ async def test_a_goodbye_reads_as_sleep_only_when_we_control_power(power_control
 
 
 @pytest.mark.asyncio
+async def test_a_goodbye_leaves_a_speaker_on_mains_power_connected() -> None:
+    """Test a speaker that does not sleep is left as it is when its announcement is gone."""
+    player, _ = _wakeable_player(portable=False)
+    player.connected = True
+    player._attr_powered = True
+    player._disconnect = AsyncMock()  # type: ignore[method-assign]
+
+    with patch.object(
+        player, "_player", MagicMock(spec=Player, power_control=PLAYER_CONTROL_NATIVE)
+    ):
+        await player.on_mdns_goodbye()
+
+    player._disconnect.assert_not_awaited()
+    assert player._attr_powered is True
+    assert player._marked_asleep is False
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("marked_asleep", [True, False])
 async def test_reconnecting_only_powers_on_after_a_confirmed_sleep(
     marked_asleep: bool, timer_mass: MusicAssistant
 ) -> None:
     """Test a reconnect wakes a sleeping player but leaves a local power off alone."""
     player, client = _bind_player(timer_mass)
-    player._wakeable = True
+    player._sleeps = True
     player._attr_powered = False
     player._marked_asleep = marked_asleep
 
@@ -1438,6 +1592,26 @@ async def test_a_failed_connect_puts_a_portable_to_sleep_without_retrying() -> N
     mass.call_later.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_a_failed_connect_to_a_speaker_on_mains_power_is_retried() -> None:
+    """Test a speaker that does not sleep reads as unavailable when it stops answering."""
+    player, mass = _wakeable_player(portable=False)
+    player._attr_powered = True
+    player.client.connect = AsyncMock(  # type: ignore[method-assign]
+        side_effect=CannotConnect(OSError("no route to host"))
+    )
+
+    with patch.object(
+        player, "_player", MagicMock(spec=Player, power_control=PLAYER_CONTROL_NATIVE)
+    ):
+        await player._connect(retry_on_fail=5)
+
+    assert player._attr_available is False
+    assert player._attr_powered is True
+    assert player._marked_asleep is False
+    mass.call_later.assert_called_once()
+
+
 @pytest.mark.parametrize(
     ("features", "expected"),
     [
@@ -1447,12 +1621,12 @@ async def test_a_failed_connect_puts_a_portable_to_sleep_without_retrying() -> N
         (["WAKEABLE"], False),
     ],
 )
-def test_is_wakeable_reads_the_advertised_device_features(
+def test_the_advertised_device_features_are_read_defensively(
     features: list[Any] | None, expected: bool
 ) -> None:
-    """Test the WAKEABLE device feature is read defensively from the discovery info."""
+    """Test a device feature is found in the discovery info, whatever that holds."""
     device: dict[str, Any] = {} if features is None else {"deviceFeatures": features}
-    assert _is_wakeable(cast("Any", {"device": device})) is expected
+    assert _has_device_feature(cast("Any", {"device": device}), "WAKEABLE") is expected
 
 
 @pytest.mark.asyncio
@@ -1563,3 +1737,215 @@ async def test_pause_stops_a_speaker_playing_the_queue_of_its_player(queue_playi
         group.pause.assert_not_awaited()
     else:
         group.pause.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("queue_playing", "served_as_file", "can_pause", "passive", "stops"),
+    [
+        pytest.param(True, False, True, False, True, id="queue item not served as a file"),
+        pytest.param(True, True, True, False, False, id="queue item served as a file"),
+        pytest.param(False, False, True, False, False, id="another source"),
+        pytest.param(False, False, False, False, True, id="no pause offered"),
+        pytest.param(True, False, True, True, False, id="synced to another speaker"),
+    ],
+)
+def test_a_speaker_stops_on_a_pause_it_could_not_resume(
+    queue_playing: bool, served_as_file: bool, can_pause: bool, passive: bool, stops: bool
+) -> None:
+    """
+    Test a speaker stops on a pause in a queue item it does not get as a file, or without a pause.
+
+    :param queue_playing: Whether the speaker plays a Music Assistant queue.
+    :param served_as_file: Whether the item it plays is served to it as a file.
+    :param can_pause: Whether the speaker offers a pause of what it plays.
+    :param passive: Whether the speaker follows another one, which handles the pause.
+    :param stops: Whether a pause stops the speaker.
+    """
+    player, mass, client = _connected_player()
+    client.player.is_passive = passive
+    client.player.group.playback_actions.can_pause = can_pause
+    player._player = MagicMock(spec=Player)
+    player._player.active_source = "pl0123456789ab"
+    mass.player_queues.get.return_value = MagicMock() if queue_playing else None
+
+    with patch.object(SonosPlayer, "_plays_file", return_value=served_as_file):
+        assert player.stops_on_pause is stops
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("served_as_file", [True, False])
+async def test_pause_pauses_a_speaker_only_in_a_track_it_gets_as_a_file(
+    served_as_file: bool,
+) -> None:
+    """Test a speaker playing a queue is paused in a file, and stopped in any other stream."""
+    player, mass, client = _connected_player()
+    client.player.is_passive = False
+    group = client.player.group
+    group.stop = AsyncMock()
+    group.pause = AsyncMock()
+    group.playback_actions.can_pause = True
+    group.playback_metadata = {"currentItem": {"id": "abc@0", "track": {"name": "Shout"}}}
+    player._player = MagicMock(spec=Player)
+    player._player.active_source = "pl0123456789ab"
+    player.cloud_queue_id = "pl0123456789ab"
+    # the speaker reports the item it cached for the position, and plays what it fetched there
+    player._served_bindings = {"abc@0": (0, "xyz")}
+    player._config = MagicMock()
+    player._config.get_value.return_value = "lossless_uncompressed"
+    queue_item = mass.player_queues.get_item.return_value
+    mass.streams.serves_as_file.return_value = served_as_file
+
+    await player.pause()
+
+    mass.player_queues.get_item.assert_called_once_with("pl0123456789ab", "xyz")
+    mass.streams.serves_as_file.assert_called_once_with(player, queue_item, ContentType.WAV)
+    if served_as_file:
+        group.pause.assert_awaited_once()
+        group.stop.assert_not_awaited()
+    else:
+        group.stop.assert_awaited_once()
+        group.pause.assert_not_awaited()
+
+
+def _speaker_to_pause(
+    status_item_id: str | None, metadata_item_id: str | None, file_item_ids: set[str]
+) -> tuple[SonosPlayer, MagicMock]:
+    """
+    Return a speaker playing our cloud queue of load generation 7, and its group.
+
+    :param status_item_id: The item the group's playback status names.
+    :param metadata_item_id: The item the group's playback metadata names.
+    :param file_item_ids: The queue items served to the speaker as a file.
+    """
+    player, mass, client = _connected_player()
+    client.player.is_passive = False
+    group = client.player.group
+    group.stop = AsyncMock()
+    group.pause = AsyncMock()
+    group.playback_actions.can_pause = True
+    group.playback_item_id = status_item_id
+    group.playback_metadata = (
+        {"currentItem": {"id": metadata_item_id, "track": {"name": "Shout"}}}
+        if metadata_item_id
+        else {}
+    )
+    player._player = MagicMock(spec=Player)
+    player._player.active_source = "pl0123456789ab"
+    player._player.stop_called = False
+    player.cloud_queue_id = "pl0123456789ab"
+    player.cloud_queue_item_generation = 7
+    player._config = MagicMock()
+    player._config.get_value.return_value = "lossless_uncompressed"
+    mass.player_queues.get_item.side_effect = lambda _queue_id, item_id: MagicMock(
+        queue_item_id=item_id
+    )
+    mass.streams.serves_as_file.side_effect = lambda _player, queue_item, _codec: (
+        queue_item.queue_item_id in file_item_ids
+    )
+    return player, group
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_item_id", "metadata_item_id", "file_item_ids", "pauses"),
+    [
+        pytest.param("abc@7", None, {"abc"}, True, id="right after a load"),
+        pytest.param("def@7", "abc@7", {"def"}, True, id="right after a change of track"),
+        pytest.param(None, "abc@7", {"abc"}, True, id="status names no item"),
+        pytest.param("abc@7", None, set(), False, id="item not served as a file"),
+        pytest.param("abc@3", None, {"abc"}, False, id="status item of another load"),
+        pytest.param("abc", None, {"abc"}, False, id="status item without a generation"),
+        pytest.param("abc@6", "abc@6", {"abc"}, False, id="load in flight"),
+    ],
+)
+async def test_pause_follows_the_item_the_playback_status_names(
+    status_item_id: str | None, metadata_item_id: str | None, file_item_ids: set[str], pauses: bool
+) -> None:
+    """
+    Test a pause reads the item the speaker plays from its status, before the metadata names it.
+
+    :param status_item_id: The item the group's playback status names.
+    :param metadata_item_id: The item the group's playback metadata names.
+    :param file_item_ids: The queue items served to the speaker as a file.
+    :param pauses: Whether the speaker is paused rather than stopped.
+    """
+    player, group = _speaker_to_pause(status_item_id, metadata_item_id, file_item_ids)
+
+    await player.pause()
+
+    if pauses:
+        group.pause.assert_awaited_once()
+        group.stop.assert_not_awaited()
+    else:
+        group.stop.assert_awaited_once()
+        group.pause.assert_not_awaited()
+
+
+def test_a_pause_reported_right_after_a_change_of_track_reads_as_paused() -> None:
+    """Test a pause in a new track served as a file is a pause while the metadata names the old one."""
+    player, group = _speaker_to_pause("def@7", "abc@7", {"def"})
+    client = cast("MagicMock", player.client)
+    client.player.is_coordinator = True
+    client.player.group_members = ["sonos_player"]
+    _report_playing_our_queue(group, "abc@7")
+    group.playback_state = SonosPlayBackState.PLAYBACK_STATE_PAUSED
+
+    player.update_attributes()
+
+    assert player._attr_playback_state is PlaybackState.PAUSED
+
+
+def test_a_speaker_paused_in_a_flow_stream_reads_idle_until_it_is_loaded_anew(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test a speaker that plays again by itself after a pause waits, idle, for the queue's resume."""
+    player, group = _speaker_to_pause("flow@7", "flow@7", set())
+    client = cast("MagicMock", player.client)
+    client.player.is_coordinator = True
+    client.player.group_members = ["sonos_player"]
+    player._flow_media = PlayerMedia(
+        uri="http://ma/flow/session/queue/track0/sonos_player.wav",
+        queue_item_id="flow",
+        queue_session_id="session",
+    )
+    player._flow_paused = player._flow_resume_asked = False
+    resume = MagicMock()
+    monkeypatch.setattr(player, "_resume_paused_flow", resume)
+    _report_playing_our_queue(group, "flow@7")
+    reported: list[PlaybackState] = []
+
+    for state in ("PLAYING", "PAUSED", "BUFFERING", "PLAYING"):
+        group.playback_state = SonosPlayBackState(f"PLAYBACK_STATE_{state}")
+        player.update_attributes()
+        reported.append(player._attr_playback_state)
+
+    assert reported == [PlaybackState.PLAYING, *[PlaybackState.IDLE] * 3]
+    resume.assert_called_once_with("pl0123456789ab", "session")
+
+
+def test_a_speaker_fetches_files() -> None:
+    """Test a speaker asks for a track as a file, where the stream server has one."""
+    player, _ = _make_player()
+
+    assert player.fetches_files is True
+
+
+def test_a_speaker_shows_the_titles_in_a_stream() -> None:
+    """Test a radio station a speaker plays as one stream carries its titles by default."""
+    player, _ = _make_player()
+
+    assert player.shows_stream_titles is True
+
+
+def test_a_speaker_defaults_to_lossless_uncompressed() -> None:
+    """Test a speaker the user picked no playback quality for is streamed lossless, uncompressed."""
+    player, _ = _make_player()
+
+    assert player.default_playback_quality is PlaybackQuality.LOSSLESS_UNCOMPRESSED
+
+
+def test_a_speaker_needs_no_content_length() -> None:
+    """Test a stream that is not a file reaches a speaker without a made-up length."""
+    player, _ = _make_player()
+
+    assert player.requires_content_length is False

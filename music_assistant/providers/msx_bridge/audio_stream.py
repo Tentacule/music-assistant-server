@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
 
 from aiohttp import web
@@ -17,6 +17,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
+from music_assistant.models.media_capabilities import AudioSourceRefusedError
 
 from .constants import PRE_BUFFER_BYTES
 
@@ -87,10 +88,7 @@ class AudioPipeline:
                 player_id,
             )
 
-        effective_format = cast(
-            "str",
-            player.config.get_value("output_codec", "mp3"),
-        )
+        effective_format = player.output_codec.value
 
         pcm_format, out_format, headers = build_audio_params(effective_format)
 
@@ -242,6 +240,9 @@ class AudioPipeline:
         try:
             await stream_task
         except asyncio.CancelledError:
+            raise
+        except AudioSourceRefusedError:
+            # the streams controller logs a source refusing this player itself
             raise
         except MusicAssistantError, OSError:
             logger.exception("Stream error for player %s", player_id)

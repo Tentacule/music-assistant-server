@@ -29,18 +29,20 @@ from music_assistant_models.errors import (
     InvalidCommand,
     MusicAssistantError,
     PlayerCommandFailed,
+    PlayerUnavailableError,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import Track
 from music_assistant_models.player import PlayerOptionValueType  # noqa: TC002
 
 from music_assistant.constants import CONF_PLAY_MEDIA_OVERRIDES_GROUP
+from music_assistant.controllers.player_queues.constants import SKIP_END_MARGIN
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     set_current_user,
 )
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.provider_access import resolve_playback_user
+from music_assistant.helpers.provider_access import resolve_queue_item_user
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.player import Player, PlayerMedia
 
@@ -84,8 +86,13 @@ class PlaybackMixin(_PlayerControllerBase):
             if active_queue := self.get_active_queue(player):
                 await self.mass.player_queues.stop(active_queue.queue_id)
                 return
+            session = self._source_sessions.get(player.player_id)
             # Delegate to internal handler for actual implementation
             await self._handle_cmd_stop(player.player_id)
+            if session is not None and session.paused:
+                # the stream of a paused source ended already, so no end of it tells its
+                # provider that the player is done with it
+                await self._release_audio_source(player.player_id)
 
     @api_command("players/cmd/play", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command(
@@ -212,6 +219,38 @@ class PlaybackMixin(_PlayerControllerBase):
             )
         # handle command on player directly
         await self._get_transport_protocol(player).seek(position)
+
+    @api_command("players/cmd/skip", required_scope=Scope.PLAYERS_CONTROL)
+    @handle_player_command(to_playback_owner=True)
+    async def cmd_skip(self, player_id: str, seconds: int) -> None:
+        """
+        Handle SKIP command for given player.
+
+        Moves the playback position within the item that plays, whatever plays on the
+        player. A forward skip stops short of the end of an item with a known duration.
+        Quick repeated skips add up into a single jump only while the player plays its queue.
+
+        :param player_id: player_id of the player to handle the command.
+        :param seconds: number of seconds to skip in the current item, negative to skip back.
+        """
+        player = self._get_player_with_redirect(player_id)
+        if self._get_active_audio_source(player) is None and (
+            active_queue := self.get_active_queue(player)
+        ):
+            await self.mass.player_queues.skip(active_queue.queue_id, seconds)
+            return
+        if (position := player.corrected_elapsed_time) is None:
+            msg = f"Player {player.name} does not report the position of what it plays"
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="source_control_unsupported",
+                translation_owner=self.translation_owner,
+                translation_args=[player.name],
+            )
+        target = max(0.0, position + seconds)
+        if player.current_media and (duration := player.current_media.duration):
+            target = min(target, max(0.0, duration - SKIP_END_MARGIN))
+        await self.cmd_seek(player.player_id, int(target))
 
     @api_command("players/cmd/shuffle", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command(to_playback_owner=True)
@@ -487,6 +526,18 @@ class PlaybackMixin(_PlayerControllerBase):
         # forward to player
         await protocol.set_option(option_key=option_key, option_value=option_value)
 
+    def replaces_enqueued_media(self, player_id: str) -> bool:
+        """Return if the protocol that takes the player's next item can still replace it."""
+        if (player := self.get_player(player_id)) is None:
+            return False
+        target = (
+            self._get_control_target(
+                player, required_feature=PlayerFeature.ENQUEUE, require_active=True
+            )
+            or player.own_protocol
+        )
+        return target is not None and target.replaces_enqueued_media
+
     @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """
@@ -545,13 +596,14 @@ class PlaybackMixin(_PlayerControllerBase):
         """
         player = self._get_player_with_redirect(player_id)
         mass_queue = self.get_active_queue(player)
-        # a favorite set from a player belongs to the user the playback is for; a service
-        # account (such as the Home Assistant integration) acts for that user as well
+        # a favorite set from a player belongs to the user the current item plays for; a
+        # service account (such as the Home Assistant integration) acts for that user as well
         session_user = get_current_user()
         if (
             (session_user is None or session_user.role == UserRole.SERVICE)
             and mass_queue
-            and (playback_user := await resolve_playback_user(self.mass, mass_queue.queue_id))
+            and mass_queue.current_item
+            and (playback_user := await resolve_queue_item_user(self.mass, mass_queue.current_item))
         ):
             set_current_user(playback_user)
         # guard for player with no active source
@@ -670,15 +722,13 @@ class PlaybackMixin(_PlayerControllerBase):
                 )
                 await self._handle_cmd_stop(group.player_id)
 
-    async def _stop_player_or_its_queue(
-        self, player: Player, keep_sleep_timer: bool = False
-    ) -> None:
+    async def _stop_player_or_its_queue(self, player: Player, pause: bool = False) -> None:
         """
         Stop the player, ending its queue when it is playing one of its own.
 
         :param player: The player to stop.
-        :param keep_sleep_timer: The stop stands in for a pause, so the sleep timer of the
-            player's queue still waits for its target once the queue resumes.
+        :param pause: The stop stands in for a pause: the player's own queue shows as paused
+            until the pause timeout, ready to play on from where it was.
         """
         # End the queue itself, exactly as a stop command does: stopping only the device
         # leaves the queue session open, so its preloading keeps pulling audio and a
@@ -690,9 +740,7 @@ class PlaybackMixin(_PlayerControllerBase):
         if (
             active_queue := self.get_active_queue(player)
         ) and active_queue.queue_id == player.player_id:
-            await self.mass.player_queues._handle_stop(
-                player.player_id, keep_sleep_timer=keep_sleep_timer
-            )
+            await self.mass.player_queues._handle_stop(player.player_id, pause=pause)
             return
         await self._handle_cmd_stop(player.player_id)
 
@@ -752,6 +800,10 @@ class PlaybackMixin(_PlayerControllerBase):
         # resume — and one that cannot be re-selected once its plugin has let go.
         if media.media_type not in (MediaType.AUDIO_SOURCE, MediaType.ANNOUNCEMENT):
             await self._release_audio_source(player_id)
+        if player.fake_paused:
+            player.end_fake_pause()
+            # a player that does not get to play goes idle after all
+            self._schedule_fake_pause_end(player_id)
         # set active source if media has a source_id (e.g. plugin source or mass queue source)
         if media.source_id:
             player.set_active_mass_source(media.source_id)
@@ -812,6 +864,17 @@ class PlaybackMixin(_PlayerControllerBase):
                 player.group_members,
             )
             await self._activate_output_protocol(player, "native")
+        if is_fresh_start:
+            # members that kept their output in this group while it played nothing took
+            # their level and mute on their own protocol, so that output starts at them too
+            for member_protocol_id in target_player.group_members:
+                member = self.get_player_by_protocol(member_protocol_id)
+                if (
+                    member is not None
+                    and member is not player
+                    and member.active_output_protocol == member_protocol_id
+                ):
+                    await self._activate_output_protocol(member, member_protocol_id)
 
         async with own.prepare_play_media() if own else contextlib.nullcontext():
             # skip auto-play since we're about to start playback
@@ -858,6 +921,8 @@ class PlaybackMixin(_PlayerControllerBase):
         :param player_id: player_id of the player to handle the command.
         """
         player = self._get_reachable_player(player_id)
+        player.set_fake_paused(False)
+        self.mass.cancel_timer(f"fake_pause_{player_id}")
         protocol_player = player.foreign_protocol
         if player.active_output_protocol and player.active_output_protocol != "native":
             protocol_player = player.attached_protocols.get(player.active_output_protocol)
@@ -872,6 +937,10 @@ class PlaybackMixin(_PlayerControllerBase):
                 await protocol_player.stop()
                 if len(protocol_player.group_members) <= 1:
                     self.schedule_active_output_protocol_clear(player)
+            elif (own := player.own_protocol) is not None and own.is_active_session:
+                # a group that plays nothing can still hold its members, and can be about to
+                # play on by itself with another leader: the stop ends that as well
+                await own.stop()
             return
         player.mark_stop_called()
         # Delegate to the active audio protocol if one is active
@@ -978,6 +1047,9 @@ class PlaybackMixin(_PlayerControllerBase):
         player = self._get_reachable_player(player_id)
         if player.playback_state == PlaybackState.IDLE:
             return
+        if player.fake_paused and not player.fake_pause_ending:
+            # paused already: its pause timeout runs from the first pause
+            return
         # If an AudioSource is the active queue item, proxy pause to the plugin
         if active := self._get_active_audio_source(player):
             audio_source, plugin_prov = active
@@ -998,10 +1070,11 @@ class PlaybackMixin(_PlayerControllerBase):
                 translation_owner=self.translation_owner,
                 translation_args=[player.name],
             )
-        # Delegate to the active audio protocol if one is active
-        if target_player := player.foreign_protocol or self._get_control_target(
-            player, PlayerFeature.PAUSE, require_active=True
-        ):
+        # Delegate to the active audio protocol if one is active, unless it would stop for it
+        if (
+            target_player := player.foreign_protocol
+            or self._get_control_target(player, PlayerFeature.PAUSE, require_active=True)
+        ) and not target_player.stops_on_pause:
             await target_player.pause()
             return
         # No active protocol target: if the protocol rendering the audio supports pause and the
@@ -1013,16 +1086,80 @@ class PlaybackMixin(_PlayerControllerBase):
             and active_source
             and active_source.can_play_pause
             and PlayerFeature.PAUSE in output_player.supported_features
+            and not output_player.stops_on_pause
         ):
             await output_player.pause()
             return
-        # player/protocol does not support pause: fall back to stop, which also ends the
-        # player's own queue so it releases its audio and the music source right away
+        # player/protocol can not pause what it plays: fall back to stop, which also ends the
+        # player's own queue so it releases its audio and the music source right away, and
+        # shows that queue as paused until the pause timeout
         self.logger.debug(
             "Player/protocol %s does not support pause, using STOP instead",
             player.name,
         )
-        await self._stop_player_or_its_queue(player, keep_sleep_timer=True)
+        await self._stop_player_or_its_queue(player, pause=True)
+
+    async def _handle_fake_pause(self, player_id: str) -> None:
+        """
+        Silence a player without pausing its stream, and show it as paused.
+
+        It shows as paused until it plays again, is stopped or the pause timeout passes.
+        Skips permission checks and locking (internal use only).
+
+        :param player_id: player_id of the player to silence.
+        """
+        player = self._get_reachable_player(player_id)
+        # set before the output is silent, so the player never shows as idle in between
+        player.set_fake_paused(True)
+        player.mark_stop_called()
+        self._schedule_fake_pause_end(player_id)
+        try:
+            if (output := player.resolve_output_protocol()) is not None:
+                await output.hold()
+        except Exception:
+            # the output plays on
+            player.set_fake_paused(False)
+            raise
+
+    def _schedule_fake_pause_end(self, player_id: str) -> None:
+        """
+        Have the fake pause of a player end once the pause timeout passed, counted from now.
+
+        :param player_id: player_id of the player.
+        """
+        self.mass.call_later(
+            self.mass.player_queues._get_pause_timeout(),
+            self._end_fake_pause,
+            player_id,
+            task_id=f"fake_pause_{player_id}",
+        )
+
+    async def _end_fake_pause(self, player_id: str) -> None:
+        """
+        End the fake pause of a player and stop it, unless it got something else to play.
+
+        A player that plays its own queue has that queue stopped, at the place of its pause.
+
+        :param player_id: player_id of the player.
+        """
+        async with self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
+            if (player := self.get_player(player_id)) is None or not player.fake_paused:
+                return
+            if self._has_waiting_start(player):
+                # a start that waits for players to start up is about to play: the stop
+                # below would call it off, so the timeout counts again
+                self._schedule_fake_pause_end(player_id)
+                return
+            still_paused = (
+                player.playback_state == PlaybackState.PAUSED
+                and not player.fake_pause_ending
+                # a player that joined a group since plays what that plays
+                and self._resolve_playback_owner(player) is player
+            )
+            player.set_fake_paused(False)
+            if still_paused:
+                with suppress(PlayerUnavailableError):
+                    await self._stop_player_or_its_queue(player)
 
     async def _resolve_currently_playing(
         self, player: Player, mass_queue: PlayerQueue | None, library_only: bool = False

@@ -47,6 +47,7 @@ once and that every test it names exists.
 - [Where playback goes](#where-playback-goes) (OUTPUT)
 - [Volume](#volume) (VOLUME)
 - [A pause, a stop and the end of a queue](#a-pause-a-stop-and-the-end-of-a-queue) (PAUSE)
+- [A live source that pauses](#a-live-source-that-pauses) (SOURCE)
 
 ## A device appears
 
@@ -1866,6 +1867,16 @@ that follows switches nothing on.
   - `test_group_power_on.py::test_an_announcement_to_a_group_switches_no_member_on`
   - `test_group_power_on.py::test_an_announcement_to_a_member_switches_no_other_member_on`
 
+### GROUP-70 · An announcement to a player that leads others plays on that player alone
+
+Kitchen leads Office and plays. An announcement to Kitchen stops the group and takes Office off
+Kitchen, so only Kitchen plays the clip. Office joins Kitchen again after it, and the group plays
+on, on both.
+
+- End-to-end: **possible with** two speakers that group on their own protocol and do not announce
+  natively, and a client that sends an announcement.
+- Proven by: `test_announcements.py::test_an_announcement_to_a_leader_plays_on_the_leader_alone`
+
 ### GROUP-35 · A play, a next, a previous or a seek on a group that plays already switches no member on
 
 Downstairs plays on Kitchen and Office: Den's plug refused to switch on when it started, and
@@ -2065,6 +2076,34 @@ against a first member that can not lead the others.
   - `test_grouping.py::test_a_sync_group_whose_leader_leaves_is_led_by_a_member_that_can_group_with_the_others`
   - `test_grouping.py::test_a_player_added_to_an_idle_sync_group_is_checked_against_the_member_that_leads`
 
+### GROUP-68 · A sync group that is stopped between two leaders stays silent
+
+Downstairs plays with Kitchen leading Office and Den. Kitchen leaves the group, which is silent and
+plays on two seconds later, with Office leading Den. When Downstairs, Office or the queue of
+Downstairs is stopped before that, or Downstairs is ungrouped, nothing plays later and Office and
+Den are free again. With fake power control, Downstairs is still on after the stop and keeps Office
+and Den. A play on Downstairs plays on from where the music stopped.
+
+- End-to-end: **possible with** three speakers that group on a protocol without a hand-over of the
+  playing leader, such as Sonos in a track the speakers do not get as a file.
+- Proven by:
+  - `test_group_stop.py::test_a_sync_group_that_is_stopped_between_two_leaders_stays_silent`
+  - `test_group_stop.py::test_a_powered_sync_group_that_is_stopped_between_two_leaders_stays_on_and_silent`
+  - `test_group_stop.py::test_a_sync_group_stopped_between_two_leaders_plays_on_from_there_when_it_is_played`
+
+### GROUP-69 · A group whose music just ended lets its members go when it is stopped
+
+Downstairs, a sync group or a universal group of Kitchen and Office, plays its music to the end and
+holds its members for 10 s more. When Downstairs or Office is stopped in that time, or Downstairs
+is ungrouped, Kitchen and Office are free at once. Music that is played on Office in that time
+starts at once when Downstairs is a sync group with a fixed member list: Downstairs lets Office go
+first.
+
+- End-to-end: **yes**. Two virtual Squeezelite players.
+- Proven by:
+  - `test_group_stop.py::test_a_group_that_is_stopped_after_its_music_ended_frees_its_members`
+  - `test_group_stop.py::test_a_member_of_a_fixed_group_whose_music_ended_plays_its_own_music_at_once`
+
 ### GROUP-50 · What a member does elsewhere does not cost it its place in a sync group
 
 Downstairs is a sync group of Kitchen, Office and Den, in that order. Members that follow a
@@ -2155,8 +2194,9 @@ Downstairs, a sync group with a fixed member list, is paused on Kitchen and Offi
 did not answer when it started, and works again. Ten seconds later the user presses play: Den's
 plug is switched on and the play waits for Den to start up, for longer than what is left of the
 pause timeout. Downstairs is not stopped when that timeout ends: it stays paused, and once Den
-has started up it starts once, on all three. Without a play, Downstairs is stopped when the pause
-timeout ends, and Den's plug stays off. When the user stops Downstairs while the play waits, the
+has started up it starts once, on all three. That goes as well for speakers without a pause of
+their own, which the pause stops while Downstairs shows as paused. Without a play, Downstairs is
+stopped when the pause timeout ends, and Den's plug stays off. When the user stops Downstairs while the play waits, the
 play fails and Downstairs is stopped; when the user pauses it instead, the play fails, Downstairs
 is still paused, and it is stopped when the pause timeout has passed since that pause.
 
@@ -2241,6 +2281,74 @@ plays on all three once they have started up.
 - End-to-end: **possible with** a power control the lab can switch and can make refuse.
 - Proven by: `test_group_power_on.py::test_a_group_none_of_whose_members_can_play_fails_and_waits_for_them_at_its_next_start`
 
+### GROUP-66 · A sync group plays on once its silent old leader lets a member go
+
+Downstairs plays with Kitchen leading over AirPlay, and Office following Kitchen on their own
+protocol. Kitchen leaves the group and answers no group command for 36 s, after which its device
+lets Office go: Downstairs then plays on, on Office. When Office leaves the group during the wait,
+it leaves at once, and nothing plays later. Nor does it when Downstairs is stopped during the wait.
+A play on Downstairs during the wait fails instead of waiting along; a later one plays.
+
+- End-to-end: **no**: the device has to be silent for that long.
+- Proven by:
+  - `test_grouping.py::test_a_sync_group_plays_on_once_its_silent_old_leader_lets_the_member_go`
+  - `test_grouping.py::test_a_member_taken_out_while_its_silent_old_leader_holds_it_does_not_start`
+  - `test_grouping.py::test_a_sync_group_stopped_while_its_silent_old_leader_holds_a_member_stays_silent`
+  - `test_grouping.py::test_a_play_does_not_wait_until_a_silent_old_leader_lets_the_new_one_go`
+
+### GROUP-67 · A leader that plays over another protocol lets its followers go before it stops
+
+Downstairs plays with Kitchen leading over AirPlay, and Office following Kitchen on their own
+protocol. Kitchen leaves the group: it first lets Office go and then stops its AirPlay receiver, as
+a device can be silent for long on a group command right after that stop. Downstairs plays on, on
+Office, two seconds later. The same order applies when both leave at once. When Kitchen plays on the
+protocol Office follows it on, it stops first and lets Office go then.
+
+- End-to-end: **possible with** two speakers that group on their own protocol and have an AirPlay
+  receiver.
+- Proven by:
+  - `test_grouping.py::test_a_sync_group_plays_on_at_once_when_its_airplay_leader_leaves`
+  - `test_grouping.py::test_a_sync_group_whose_airplay_leader_and_its_member_leave_at_once_lets_them_go`
+  - `test_grouping.py::test_a_sync_group_leader_on_its_own_protocol_stops_before_it_lets_its_members_go`
+
+### GROUP-71 · A fixed group ends when a member that dropped off is taken out
+
+Downstairs is a sync group with a fixed member list, Kitchen, Office and Den, and plays. Office drops
+off for a moment, and still belongs to Downstairs. Before Downstairs takes it back the user plays
+something else on it, selects a source on it, ungroups it or switches it off: Downstairs stops, as it
+does when Office plays along, and leaves Office alone. When Office can not be reached, or an
+announcement plays on it, Downstairs plays on, and takes it back once it is back.
+
+- End-to-end: **possible with** a device that can be cut off its group for a moment.
+- Proven by:
+  - `test_grouping.py::test_a_fixed_group_ends_when_a_member_that_dropped_off_is_taken_out`
+  - `test_grouping.py::test_a_fixed_group_plays_on_when_a_member_that_dropped_off_can_not_be_reached`
+  - `test_announcements.py::test_an_announcement_to_a_member_that_dropped_off_leaves_its_group_playing`
+
+### GROUP-72 · A member of a fixed group that plays something of its own is left alone
+
+Downstairs is a sync group with a fixed member list, Kitchen, Office and Den, and plays. Office is
+taken out at the device and plays something of its own: Downstairs plays on without it and leaves it
+alone until that ends.
+
+- End-to-end: **possible with** a device that plays by itself, such as one with a vendor's own app.
+- Proven by: `test_grouping.py::test_a_member_of_a_fixed_group_that_plays_something_of_its_own_is_left_alone`
+
+### GROUP-73 · A sync group whose leader refuses its members does not keep that leader
+
+Downstairs is a sync group of Kitchen and Office, in that order, and Kitchen refuses to take Office
+as its member, as a speaker does that is asked to lead a stereo pair. The user plays Downstairs: the
+play fails with Kitchen's refusal, Downstairs is not formed and none of its members shows it as
+active. The user puts Office first in its settings and plays it again: Office leads and Kitchen
+follows it. A member that Kitchen did take before it refused another one is let go again. A
+Downstairs that already plays keeps its leader when that leader refuses to take a member back.
+
+- End-to-end: **possible with** a WiiM stereo pair, which another WiiM speaker can not lead.
+- Proven by:
+  - `test_grouping.py::test_a_sync_group_whose_leader_refuses_its_members_forgets_that_leader`
+  - `test_grouping.py::test_a_sync_group_whose_leader_refuses_a_member_lets_the_ones_it_took_go`
+  - `test_grouping.py::test_a_formed_sync_group_keeps_its_leader_when_it_can_not_take_a_member_back`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered
@@ -2273,18 +2381,52 @@ pause.
   through its own protocol), with its DLNA renderer and a Spotify Connect session started on it.
 - Proven by: `tests/providers/wiim/test_linkplay_control.py::test_transport_commands_reach_an_app_playing_on_the_renderer`
 
+### OUTPUT-3 · A player that plays nothing keeps no output for a group it no longer has
+
+Lounge leads Study over AirPlay and the user stops the group: Lounge keeps its AirPlay receiver
+as its output, for the group. Once the user takes Study out, neither of them names its AirPlay
+receiver as its output. Study, a WiiM speaker, plays along with the Sendspin speaker Den on its
+Sendspin client; once it leaves Den's group, it no longer names that client as its output. Volume
+and mute of both go to their own protocol again.
+
+- End-to-end: **possible with** two virtual players of different kinds that each also run an
+  AirPlay receiver on their host, and a WiiM speaker with a Sendspin bridge next to a Sendspin
+  speaker.
+- Proven by:
+  - `test_outputs.py::test_a_stopped_leader_lets_go_of_its_output_once_its_group_ended`
+  - `test_outputs.py::test_a_member_lets_go_of_the_output_it_played_its_group_on_once_it_left`
+
 ## Volume
 
-The level and mute of a player are its own. A volume or mute command goes to the output that
-renders, else to the own protocol, and an output that takes over gets the player's level first.
-The examples use the Kitchen speaker with its own protocol at level 30 and its AirPlay receiver at
-level 80.
+The level and mute of a player are its own. By default its own protocol controls them while it can
+be reached, also while another output renders. With "Follow protocol" selected as the volume and
+mute control, a volume or mute command goes to the output that renders, else to the own protocol,
+and an output that takes over gets the player's level first. The examples use the Kitchen speaker
+with its own protocol at level 30 and its AirPlay receiver at level 80.
 
-### VOLUME-1 · An output that takes over gets the player's level before it plays
+### VOLUME-8 · By default the own protocol keeps the volume and mute while another output renders
 
-The user prefers the AirPlay receiver as Kitchen's output and plays. The receiver gets level 30
-once, before the media, and the player never shows 80. When Kitchen and Hall group over AirPlay,
-each receiver gets the level and mute of its own player.
+The user prefers the AirPlay receiver as Kitchen's output and plays, with no volume or mute
+control selected. The receiver gets no level or mute, and the player shows level 30. Volume and
+mute commands go to the own protocol. A level the own protocol reports moves the player's level;
+one the receiver reports does not. A LinkPlay device, which is controlled without an audio path
+of its own, keeps its volume and mute on that control in the same way while its DLNA renderer
+plays.
+
+- End-to-end: **possible with** a host that runs a native player and an AirPlay receiver at
+  different levels, such as Squeezelite and shairport-sync; for the LinkPlay part, a LinkPlay
+  device that is no WiiM, with its DLNA renderer.
+- Proven by:
+  - `tests/controllers/players/test_routing.py::test_audio_protocol_that_takes_over_gets_no_level_while_the_native_owns_it`
+  - `tests/controllers/players/test_routing.py::test_volume_goes_to_the_native_protocol_while_an_audio_protocol_plays`
+  - `tests/providers/wiim/test_linkplay_control.py::test_volume_and_mute_go_to_the_linkplay_control_while_the_renderer_plays`
+
+### VOLUME-1 · With "Follow protocol" selected, an output that takes over gets the player's level before it plays
+
+The user selects "Follow protocol" as Kitchen's volume and mute control, prefers the AirPlay
+receiver as its output and plays. The receiver gets level 30 once, before the media, and the player
+never shows 80. When Kitchen and Hall, both on "Follow protocol", group over AirPlay, each receiver
+gets the level and mute of its own player.
 
 - End-to-end: **possible with** a host that runs a native player and an AirPlay receiver at
   different levels, such as Squeezelite and shairport-sync.
@@ -2292,11 +2434,12 @@ each receiver gets the level and mute of its own player.
   - `tests/controllers/players/test_routing.py::test_audio_protocol_that_takes_over_gets_the_level_of_the_player_first`
   - `tests/controllers/players/test_routing.py::test_players_grouped_through_an_audio_protocol_hand_it_their_level_and_mute`
 
-### VOLUME-2 · A volume command goes to the output that renders, and only it reports back
+### VOLUME-2 · With "Follow protocol" selected, volume goes to the output that renders, and only it reports back
 
-While Kitchen plays through its AirPlay receiver, a volume command goes to the receiver, not to
-the own protocol. A level the idle own protocol reports does not move the player's level; one the
-receiver reports does. While nothing else renders, a volume command goes to the own protocol.
+While Kitchen plays through its AirPlay receiver with "Follow protocol" selected, a volume command
+goes to the receiver, not to the own protocol. A level the idle own protocol reports does not move
+the player's level; one the receiver reports does. While nothing else renders, a volume command goes
+to the own protocol.
 
 - End-to-end: **possible with** the setup of VOLUME-1.
 - Proven by:
@@ -2352,23 +2495,45 @@ a volume command reaches it.
 Living, a single speaker or a multi-channel player at level 60, leads a group with Office at level
 30. The group volume is 60, the level of the loudest member with Living included. A step up of
 the group volume turns both up and keeps their balance: Living to 63, Office to 35. A group player
-has no level of its own; only its members count.
+has no level of its own; only its members count. A LinkPlay device that leads a native LinkPlay
+group counts its own level the same way, and each device of the group gets its level on its own
+LinkPlay control.
 
-- End-to-end: **possible with** two players of one make that group, one of them a set of speakers.
-- Proven by: `test_grouping.py::test_a_leader_counts_its_own_level_in_the_group_volume`
+- End-to-end: **possible with** two players of one make that group, one of them a set of speakers;
+  for the LinkPlay part, two LinkPlay devices that are no WiiM, grouped natively.
+- Proven by:
+  - `test_grouping.py::test_a_leader_counts_its_own_level_in_the_group_volume`
+  - `tests/providers/wiim/test_linkplay_control.py::test_group_volume_reaches_each_device_of_a_native_linkplay_group`
+
+### VOLUME-7 · An output that plays nothing leaves volume and mute to the own protocol
+
+Lounge and Study have "Follow protocol" selected as their volume and mute control. Lounge leads
+Study over AirPlay and the user stops the group. Lounge's AirPlay receiver stays its output for the
+group, but plays nothing, and an AirPlay receiver only takes a volume command while it streams. A
+volume or mute command goes to Lounge's own protocol, and the receiver gets none. The user turns
+Study down and mutes it meanwhile, which reaches Study's own protocol; when the group plays again,
+Study's receiver gets that level and mute before the music starts.
+
+- End-to-end: **possible with** two virtual players of different kinds that each also run an
+  AirPlay receiver on their host.
+- Proven by:
+  - `test_outputs.py::test_a_stopped_leader_takes_volume_on_its_own_protocol_while_it_keeps_its_group`
+  - `test_outputs.py::test_a_member_plays_again_at_the_level_it_got_while_its_group_was_stopped`
 
 ## A pause, a stop and the end of a queue
 
 A queue whose player plays its last item out is taken for ended 5 s later: it is parked on its
 last item and a play starts it over. A pause or a stop is not that end: the queue keeps its
-place, also when the pause stops the player. In the examples the Kitchen speaker is a Sendspin
-speaker without a pause of its own, so a pause stops it, and it has the whole last track of its
-queue in its buffer.
+place, also when the pause stops the player. A player that is stopped for a pause shows as paused
+until the pause timeout of 30 s, and as idle from then on. In the examples the Kitchen speaker is
+a Sendspin speaker without a pause of its own, so a pause stops it, and it has the whole last
+track of its queue in its buffer.
 
 ### PAUSE-1 · A pause on a player that can not pause is not the end of its queue
 
 The Kitchen speaker is paused 5 s into the last track of its queue. The speaker stops and the
-queue is idle on that track at 5 s. It still is 5 s later, and a minute later.
+queue is paused on that track at 5 s. It still is 5 s later. After the pause timeout of 30 s it is
+idle there, and it still is a minute later.
 
 - End-to-end: **yes**. The `elapsed_tracks_pause` check of the lab on its Sendspin player.
 - Proven by: `test_paused_queue.py::test_a_pause_on_a_player_that_can_not_pause_is_not_the_end_of_its_queue`
@@ -2376,8 +2541,9 @@ queue is idle on that track at 5 s. It still is 5 s later, and a minute later.
 ### PAUSE-2 · A queue paused on a player that can not pause plays on from there
 
 The Kitchen speaker is paused 5 s into the last track of its queue and resumed 4.5 s, 5 s, 5.5 s
-or 40 s later. The track plays on from 5 s. Once it has played to its end, the queue is taken
-for ended after 5 s as any other.
+or 40 s later: while it shows as paused, or once it is idle after the pause timeout. The track
+plays on from 5 s. Once it has played to its end, the queue is taken for ended after 5 s as any
+other.
 
 - End-to-end: **yes**. The `elapsed_tracks_pause` check of the lab on its Sendspin player, which
   resumes 5 s after the pause.
@@ -2386,12 +2552,14 @@ for ended after 5 s as any other.
 ### PAUSE-3 · A paused queue that is stopped at the pause timeout is not ended
 
 A speaker with a pause of its own is paused 5 s into the last track of its queue and stays
-paused. After the pause timeout of 30 s the server stops it. The queue is idle on that track at
-5 s, and a resume plays the track on from there.
+paused. After the pause timeout of 30 s the server stops it, once. The queue is idle on that
+track at 5 s, and a resume plays the track on from there.
 
 - End-to-end: **possible with** a player of the lab that has a pause of its own and plays in flow
   mode, paused for longer than the pause timeout.
-- Proven by: `test_paused_queue.py::test_a_paused_queue_that_is_stopped_at_the_pause_timeout_is_not_ended`
+- Proven by:
+  - `test_paused_queue.py::test_a_paused_queue_that_is_stopped_at_the_pause_timeout_is_not_ended`
+  - `test_paused_queue.py::test_a_pause_command_is_watched_once`
 
 ### PAUSE-4 · A play that starts as an ended queue is settled plays
 
@@ -2444,8 +2612,9 @@ It is stopped 5 s in. The playlist is not asked for more tracks, and the speaker
 ### PAUSE-8 · A queue halted in a new playback is not ended for the one before
 
 The Kitchen speaker has played its queue to the end. Before the queue is taken for ended, its
-first track is played again from 5 s and paused or stopped at once. The queue stays idle on that
-track at 5 s. The same goes for a queue whose dynamic playlist is being asked for more tracks at
+first track is played again from 5 s and paused or stopped at once. The queue stays on that track
+at 5 s: idle after the stop, and paused after the pause until the pause timeout, idle from then
+on. The same goes for a queue whose dynamic playlist is being asked for more tracks at
 that moment: whatever the playlist hands back, nothing is added to the queue and nothing starts.
 And for a play that is stopped before the speaker reports that it plays: the queue is not taken
 for ended, and a dynamic playlist is not asked for more tracks.
@@ -2520,3 +2689,243 @@ leaves the queue as it is: on its last track, not ended.
 - End-to-end: **no**: it needs a command that hangs for two minutes.
 - Proven by:
   `test_stopped_queue.py::test_a_queue_that_played_out_on_a_player_that_stays_busy_keeps_its_place`
+
+### PAUSE-14 · A queue paused at its speaker is stopped at the pause timeout
+
+A speaker with a pause of its own plays its queue and is paused 5 s in at the device itself, by
+its own app or a remote. After the pause timeout of 30 s the server stops it, as it stops a queue
+paused through the server, and a resume plays the track on from where it was paused. That is
+also so when the queue was paused through the server and played on at the device before. A queue
+that plays on at the device within the pause timeout is not stopped. Neither is another source,
+such as Spotify, that took the speaker over, before or during the pause, and is paused there.
+
+- End-to-end: **possible with** a player of the lab that has a pause of its own and can be paused
+  at the device, paused for longer than the pause timeout.
+- Proven by:
+  - `test_paused_queue.py::test_a_pause_at_the_speaker_stops_its_queue_at_the_pause_timeout`
+  - `test_paused_queue.py::test_a_queue_stopped_after_a_pause_at_the_speaker_resumes_from_that_pause`
+  - `test_paused_queue.py::test_a_queue_played_on_at_the_speaker_within_the_pause_timeout_is_not_stopped`
+  - `test_paused_queue.py::test_another_source_paused_at_the_speaker_is_not_stopped`
+  - `test_paused_queue.py::test_a_source_that_takes_over_a_paused_speaker_is_not_stopped`
+
+### PAUSE-15 · A queue paused before an announcement plays on from its pause
+
+A speaker with a pause of its own is paused 5 s into a track of its queue, and an announcement
+plays on it. After the clip the speaker is idle, and so is its queue, at 5 s. Play starts the
+track again from there: the speaker is not told to unpause a stream it no longer has.
+
+- End-to-end: **possible with** a player of the lab that has a pause of its own and plays an
+  announcement while paused.
+- Proven by:
+  `test_announcements.py::test_a_queue_paused_before_an_announcement_plays_on_from_its_pause`
+
+### PAUSE-16 · A queue paused on a player that can not pause shows as paused until the pause timeout
+
+The Kitchen speaker is paused 5 s into a track of its queue. The speaker is stopped once, and
+clients see the player and its queue go from playing to paused, never idle in between. A sleep
+timer to the end of the track still waits for the queue to play on. After the pause timeout of
+30 s the player and its queue are idle and the sleep timer is ended, and play still plays the
+track on from 5 s. A second pause meanwhile sends the speaker nothing, and the pause timeout still
+counts from the first.
+
+- End-to-end: **possible with** a check of the lab that follows its Sendspin player and its queue
+  through a pause that lasts longer than the pause timeout.
+- Proven by:
+  - `test_queue_paused_by_a_stop.py::test_a_queue_paused_with_a_stop_shows_as_paused_until_the_pause_timeout`
+  - `test_queue_paused_by_a_stop.py::test_a_second_pause_does_not_lengthen_the_pause`
+
+### PAUSE-17 · Play on a queue paused on a player that can not pause plays on from its pause
+
+The Kitchen speaker is paused 5 s into a track of its queue, and the user presses play within the
+pause timeout. The track plays on from 5 s, and clients see the player and its queue go from
+paused to playing, never idle in between; the pause timeout no longer counts. That is also so
+when the speaker is slow to start and the pause timeout falls meanwhile. A speaker that takes the
+play and never plays is idle a pause timeout after the play. A pause before the speaker plays
+stops it again: the player stays paused, and a play after that plays the track on from 5 s.
+
+- End-to-end: **possible with** a check of the lab that presses play on its paused Sendspin
+  player, for the rest a speaker that is slow to start.
+- Proven by:
+  - `test_queue_paused_by_a_stop.py::test_play_on_a_queue_paused_with_a_stop_plays_on_from_the_pause`
+  - `test_queue_paused_by_a_stop.py::test_a_resume_shortly_before_the_pause_timeout_plays_on`
+  - `test_queue_paused_by_a_stop.py::test_a_resume_that_never_plays_leaves_its_player_idle`
+  - `test_queue_paused_by_a_stop.py::test_a_pause_during_a_resume_stops_the_start_and_stays_paused`
+
+### PAUSE-18 · A queue paused on a player that can not pause keeps its position
+
+The Kitchen speaker is paused 5 s into a track of its queue, which it plays as one flow stream or
+track by track. Whether the stopped speaker reports no stream anymore, or still names the stream
+it stopped and reports its start as its position, the queue stays on that track at 5 s, and play
+plays it on from there.
+
+- End-to-end: **possible with** a check of the lab that reads the queue of its paused Sendspin
+  player, in flow mode and track by track.
+- Proven by: `test_queue_paused_by_a_stop.py::test_a_queue_paused_with_a_stop_keeps_its_position`
+
+### PAUSE-19 · A stop, a clear, other music or an announcement ends the pause of a player that can not pause
+
+The Kitchen speaker is paused 5 s into a track of its queue. When the user stops it or clears its
+queue, the player is idle at once and nothing happens at the pause timeout; after the stop the
+queue keeps its place at 5 s. Another track played on the queue plays at once, also past the
+pause timeout. After an announcement the player is idle, and play plays the track on from 5 s.
+
+- End-to-end: **possible with** a check of the lab that stops, clears, plays on or announces on
+  its paused Sendspin player.
+- Proven by:
+  - `test_queue_paused_by_a_stop.py::test_a_stop_or_a_clear_ends_the_pause_at_once`
+  - `test_queue_paused_by_a_stop.py::test_other_media_takes_the_place_of_the_pause`
+  - `test_queue_paused_by_a_stop.py::test_an_announcement_ends_the_pause_and_the_queue_plays_on_from_it`
+
+### PAUSE-20 · Play next on a queue paused on a player that can not pause goes right after the paused track
+
+The Kitchen speaker plays the first of three tracks of its queue track by track, has fetched the
+second one, and is paused 5 s in. A track played next, or a track of the queue moved to play
+next, goes right after the paused track: the speaker no longer has the second one. Play plays the
+paused track on from 5 s first.
+
+- End-to-end: **possible with** a player of the lab without a pause of its own that plays track by
+  track.
+- Proven by:
+  `test_queue_paused_by_a_stop.py::test_play_next_on_a_paused_queue_plays_right_after_the_paused_track`
+
+### PAUSE-21 · A sync group paused on speakers that can not pause keeps its speakers
+
+The sync group Downstairs of the Kitchen and Office speakers, neither of which can pause, plays
+its queue and is paused. Its leader is stopped, and the group and both speakers show as paused,
+never idle in between. The group keeps its speakers, also past the idle grace in which a group
+that plays nothing lets them go, and play plays the queue on with the same speakers without
+grouping them again. At the pause timeout or on a stop the group and its speakers are idle and
+free again, and the queue keeps its place. The same holds for a group whose leader has a pause of
+its own that would stop it (PAUSE-22).
+
+- End-to-end: **possible with** a sync group in the lab of speakers without a pause of their own.
+- Proven by:
+  - `test_queue_paused_by_a_stop.py::test_a_paused_sync_group_keeps_its_speakers`
+  - `test_queue_paused_by_a_stop.py::test_play_on_a_paused_sync_group_plays_on_with_the_same_speakers`
+  - `test_queue_paused_by_a_stop.py::test_a_paused_sync_group_lets_its_speakers_go_when_the_pause_ends`
+
+### PAUSE-22 · A speaker that would stop for a pause shows its queue as paused
+
+A speaker has a pause of its own, but can not resume what it plays now, so its pause would stop
+it: a Sonos speaker in a track it does not get as a file, or a renderer whose user replaced its
+pause with a stop. It is paused 5 s into a track of its queue. It is stopped instead of paused,
+and shows as paused as a speaker without a pause of its own does; play plays the track on from
+5 s.
+
+- End-to-end: **possible with** a Sonos speaker in the lab that plays a track it does not get as
+  a file.
+- Proven by:
+  - `test_queue_paused_by_a_stop.py::test_a_speaker_that_would_stop_for_a_pause_shows_its_queue_as_paused`
+  - `tests/providers/sonos/test_player.py::test_a_speaker_stops_on_a_pause_it_could_not_resume`
+  - `tests/providers/dlna/test_lifecycle.py::test_a_renderer_set_to_stop_for_a_pause_stops_on_a_pause`
+  - `tests/providers/musiccast/test_player.py::test_a_zone_that_plays_from_music_assistant_stops_on_a_pause`
+
+## A live source that pauses
+
+A live source of a plugin, such as Spotify Connect, has no audio while it is paused, so its stream
+ends and the speaker is stopped. The player stays paused for a client, as with a queue. In the
+examples a Spotify Connect session plays on the Kitchen speaker, which has no pause of its own.
+
+### SOURCE-1 · A live source that pauses leaves its player paused
+
+Spotify is paused, in its app or on the Kitchen player. The speaker is silent at once, and clients
+see the player go from playing to paused, never idle in between, with the song and the source it
+had. A speaker that can stay connected while it waits is held instead of stopped. The Office speaker
+that plays along with Kitchen over AirPlay shows as paused as well, for as long as Kitchen does.
+
+- End-to-end: **possible with** a Spotify Connect session in the lab that can be paused.
+- Proven by:
+  - `test_paused_live_source.py::test_a_paused_live_source_leaves_its_player_paused`
+  - `test_paused_live_source.py::test_a_speaker_that_can_be_held_keeps_its_connection`
+  - `test_paused_live_source.py::test_a_player_synced_over_an_audio_protocol_pauses_with_its_leader`
+
+### SOURCE-2 · Play on a player with a paused live source resumes the source
+
+Spotify is paused on the Kitchen player and the user presses play there. The command goes to
+Spotify, which plays on: clients see the player go from paused to playing, never idle in between.
+Playback goes on past the pause timeout of that pause, also when the speaker is slow to start and
+the pause timeout falls meanwhile. A speaker that never gets to play is idle after the pause timeout,
+counted from the resume, and so is one whose stream ends after the resume. When Spotify pauses again
+before the speaker plays, the start is stopped and the player stays paused.
+
+- End-to-end: **possible with** a Spotify Connect session in the lab that can be paused, for the rest
+  a speaker that is slow to start.
+- Proven by:
+  - `test_paused_live_source.py::test_play_on_a_paused_live_source_goes_to_the_source`
+  - `test_paused_live_source.py::test_a_resume_shortly_before_the_pause_timeout_plays_on`
+  - `test_paused_live_source.py::test_a_resume_that_never_plays_leaves_its_player_idle`
+  - `test_paused_live_source.py::test_a_resumed_live_source_that_ends_leaves_its_player_idle`
+  - `test_paused_live_source.py::test_a_pause_during_a_resume_silences_the_speaker`
+
+### SOURCE-3 · A paused live source goes idle at the pause timeout and can still be resumed
+
+Spotify stays paused on the Kitchen player. After the pause timeout of 30 s the player is idle, as
+it is after the pause of its queue. It keeps the source and the song, and play still resumes
+Spotify.
+
+- End-to-end: **possible with** a Spotify Connect session in the lab that can be paused.
+- Proven by:
+  `test_paused_live_source.py::test_a_paused_live_source_goes_idle_at_the_pause_timeout`
+
+### SOURCE-4 · A paused live source that ends or is stopped leaves its player idle
+
+Spotify is paused on the Kitchen player. The user stops the player, within the pause timeout or
+after it, Spotify itself ends the session, or it plays on on the Office player: the Kitchen player
+is idle and back on its own queue. A stop by the user also ends the session of Spotify.
+
+- End-to-end: **possible with** a Spotify Connect session in the lab that can be paused.
+- Proven by:
+  - `test_paused_live_source.py::test_a_stop_of_a_paused_live_source_lets_it_go`
+  - `test_paused_live_source.py::test_a_source_that_ends_while_paused_leaves_its_player_idle`
+  - `test_paused_live_source.py::test_a_paused_live_source_that_moves_leaves_its_player_idle`
+
+### SOURCE-5 · Other audio on a player with a paused live source plays at once
+
+Spotify is paused on the Kitchen player. Music played on its queue starts at once and takes the
+place of Spotify. An announcement plays without waiting for the player to go idle and leaves
+Spotify on it: the player is idle after the clip, and play resumes Spotify. When the Kitchen player
+joins the Office player and that plays, it plays along, also past the pause timeout. So does a
+speaker that plays something of its own by then.
+
+- End-to-end: **possible with** a Spotify Connect session in the lab that can be paused.
+- Proven by:
+  - `test_paused_live_source.py::test_other_media_takes_the_place_of_a_paused_live_source`
+  - `test_paused_live_source.py::test_an_announcement_on_a_paused_live_source_leaves_the_source`
+  - `test_paused_live_source.py::test_a_paused_player_that_joins_a_group_plays_along`
+  - `test_paused_live_source.py::test_what_the_speaker_plays_itself_outlasts_the_pause_timeout`
+
+### SOURCE-6 · A pause that did not reach the speaker is not shown
+
+Spotify is paused and plays on before the Kitchen speaker has stopped, or the speaker refuses to
+stop: the player shows as playing, and as idle once the speaker stops later. A Spotify that pauses
+because the user stopped the player leaves it idle, also when the speaker reports the stop late. So
+does one that pauses before the speaker got to play it. A pause of a source that does not play on the Kitchen player does nothing there.
+
+- End-to-end: **no**: it needs a speaker that refuses a stop or reports it late.
+- Proven by:
+  - `test_paused_live_source.py::test_a_source_that_pauses_because_of_a_stop_leaves_its_player_idle`
+  - `test_paused_live_source.py::test_a_source_that_pauses_while_its_player_still_stops_leaves_it_idle`
+  - `test_paused_live_source.py::test_a_source_that_pauses_before_its_player_plays_leaves_it_idle`
+  - `test_paused_live_source.py::test_a_source_that_plays_on_before_the_speaker_stopped_is_not_paused`
+  - `test_paused_live_source.py::test_a_speaker_that_refuses_the_pause_is_not_paused`
+  - `test_paused_live_source.py::test_a_pause_of_another_source_leaves_the_player_alone`
+
+### SOURCE-7 · A sync group with a paused live source keeps its speakers
+
+Spotify plays on the sync group Downstairs of the Kitchen and Office speakers and is paused. The
+speakers are silent, and the group and both speakers show as paused, never idle in between. The
+group keeps its speakers, also past the idle grace in which a group that plays nothing lets them
+go, and play resumes Spotify on the same speakers without grouping them again. A speaker taken out
+of the group meanwhile, the Kitchen speaker that leads it as well, is free at once. At the pause
+timeout, on a stop of the group or of one of its speakers, or when Spotify ends the session, the
+speakers are idle and free again; a stop also ends the session of Spotify.
+
+- End-to-end: **possible with** a Spotify Connect session in the lab that can be paused, on a sync
+  group.
+- Proven by:
+  - `test_paused_live_source.py::test_a_paused_sync_group_keeps_its_speakers`
+  - `test_paused_live_source.py::test_play_on_a_paused_sync_group_plays_on_with_the_same_speakers`
+  - `test_paused_live_source.py::test_a_speaker_taken_out_of_a_paused_sync_group_is_free_at_once`
+  - `test_paused_live_source.py::test_a_paused_sync_group_lets_its_speakers_go_at_the_pause_timeout`
+  - `test_paused_live_source.py::test_a_stop_of_a_paused_sync_group_lets_the_source_go`
+  - `test_paused_live_source.py::test_a_sync_group_whose_source_ends_while_paused_goes_idle`

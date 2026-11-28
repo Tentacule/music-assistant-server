@@ -35,6 +35,7 @@ def _controller() -> PlayerQueuesController:
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
+    ctrl.mass.players.get_player.return_value.fake_paused = False
     return ctrl
 
 
@@ -292,6 +293,40 @@ async def test_next_on_idle_queue_with_content_keeps_current_index() -> None:
     assert queue.current_index == 1
     assert [item.queue_item_id for item in items] == ["e0", "e1", "n0", "e2"]
     ctrl.play_index.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("existing_ids", "expected_ids"),
+    [
+        (["e0", "e1", "e2", "e3"], ["e0", "e1", "n0", "e2", "e3"]),
+        (["e0", "e1", "e2"], ["e0", "e1", "e2", "n0"]),
+    ],
+    ids=["a track follows it", "it is the last track"],
+)
+async def test_next_takes_the_slot_of_a_replaceable_buffered_track_unless_it_is_the_last(
+    existing_ids: list[str], expected_ids: list[str]
+) -> None:
+    """The player can only replace the buffered track with a track that follows it."""
+    ctrl = _controller()
+    ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
+    existing = _items("q1", existing_ids)
+    queue = PlayerQueue(
+        queue_id="q1",
+        active=True,
+        display_name="Q1",
+        available=True,
+        items=len(existing),
+        state=PlaybackState.PLAYING,
+        current_index=1,
+        index_in_buffer=2,
+    )
+    ctrl._queue_data = {
+        "q1": PlayerQueueData(queue=queue, items=list(existing), next_item_replaceable=True)
+    }
+
+    await ctrl._enqueue_with_option("q1", _items("q1", ["n0"]), QueueOption.NEXT)
+
+    assert [item.queue_item_id for item in ctrl._queue_data["q1"].items] == expected_ids
 
 
 def _dynamic_controller() -> PlayerQueuesController:

@@ -68,6 +68,7 @@ def _player(*, state: PlaybackState = PlaybackState.PLAYING, announcement: bool 
     player.type = PlayerType.PLAYER
     player.playback_state = state
     player.active_source = QUEUE_ID
+    player.fake_paused = False
     player.corrected_elapsed_time = 0.0
     player.group_members = []
     player.offline_by_power_control = False
@@ -166,6 +167,7 @@ async def _prepare(announcements: PlayerController, player: Any, prev_state: Pla
         prev_state=prev_state,
         prev_synced_to=None,
         prev_group=None,
+        prev_members=[],
         prev_media_name=None,
         prev_volumes={},
         prev_muted=set(),

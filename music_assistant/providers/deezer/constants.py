@@ -32,7 +32,7 @@ AUTHOR_ARTIST_PREFIX = "author_"
 # Deezer's placeholder artist "Unknown"
 UNKNOWN_ARTIST_ID = "8592"
 # Bump when audiobook or release parsing changes to invalidate cached items.
-AUDIOBOOK_METADATA_VERSION = "1"
+AUDIOBOOK_METADATA_VERSION = "2"
 # an artist is an author if one of its newest releases is an audiobook; each one more
 # costs a request per 50 favorite artists in the library sync
 AUTHOR_NEWEST_RELEASES = 3
@@ -42,6 +42,11 @@ AUTHOR_NEWEST_RELEASES = 3
 FAVORITES_PAGE_SIZE = 50
 AUDIOBOOK_CHAPTERS_PAGE_SIZE = 200
 FLOW_BATCH_COUNT = 2
+
+# -- Podcast bookmarks --
+
+# lets one pass over the library share the account's bookmarks; cleared on every save
+BOOKMARKS_CACHE_SECONDS = 60
 
 # -- API rate limit, shared by the GraphQL and gw-light requests of a provider instance --
 

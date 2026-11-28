@@ -457,7 +457,7 @@ class TestAudioSourceContract:
 
 class TestTransportCommandsRedirectToQueue:
     """
-    players/cmd next/previous/seek hand off to the queue controller.
+    players/cmd next/previous/seek/skip hand off to the queue controller.
 
     With no live source playing, the queue is what the player is playing, so the
     command is its business. A live source takes the command first — see
@@ -512,6 +512,23 @@ class TestTransportCommandsRedirectToQueue:
         await controller.cmd_seek("player_1", 42)
 
         mock_mass.player_queues.seek.assert_awaited_once_with("player_1", 42)
+
+    @pytest.mark.asyncio
+    async def test_cmd_skip_redirects_to_the_queue_controller(
+        self,
+        controller: PlayerController,
+        player: Player,
+        mock_mass: MagicMock,
+    ) -> None:
+        """players/cmd/skip reaches player_queues.skip for the active queue, without a seek."""
+        self._wire_active_queue(mock_mass)
+        mock_mass.player_queues.skip = AsyncMock()
+        mock_mass.player_queues.seek = AsyncMock()
+
+        await controller.cmd_skip("player_1", -10)
+
+        mock_mass.player_queues.skip.assert_awaited_once_with("player_1", -10)
+        mock_mass.player_queues.seek.assert_not_awaited()
 
 
 # ------------------------------------------------------------- update_stream_metadata
@@ -743,6 +760,77 @@ class TestAudioSourceSilenceKeepalive:
         )
         silence_chunk = b"\x00" * (bytes_per_second * 10 // 1000)
         assert silence_chunk in out
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stall_s", [0.085, 0.11, 0.35])
+    async def test_loop_stall_inserts_no_silence(self, stall_s: float) -> None:
+        """A brief event loop stall during live audio must not inject silence."""
+        from music_assistant.helpers.audio import (  # noqa: PLC0415
+            audio_source_silence_keepalive,
+        )
+
+        pcm_format = _audio_format()
+        chunk = b"\x01" * (pcm_format.sample_rate * 4 * 20 // 1000)
+
+        async def _inner() -> AsyncGenerator[bytes]:
+            loop = asyncio.get_running_loop()
+            start = loop.time()
+            for index in range(1, 51):
+                await asyncio.sleep(max(0.0, start + index * 0.02 - loop.time()))
+                yield chunk
+
+        asyncio.get_running_loop().call_later(0.3, time.sleep, stall_s)
+        out = [c async for c in audio_source_silence_keepalive(_inner(), pcm_format)]
+
+        assert out == [chunk] * 50
+
+    @pytest.mark.asyncio
+    async def test_idle_source_gets_realtime_silence(self) -> None:
+        """Silence keeps pace with the idle time, also when each write costs the consumer time."""
+        from music_assistant.helpers.audio import (  # noqa: PLC0415
+            audio_source_silence_keepalive,
+        )
+
+        idle_s = 0.0
+
+        async def _inner() -> AsyncGenerator[bytes]:
+            nonlocal idle_s
+            loop = asyncio.get_running_loop()
+            yield b"\x01"
+            start = loop.time()
+            await asyncio.sleep(1.05)
+            idle_s = loop.time() - start
+            yield b"\x01"
+
+        pcm_format = _audio_format()
+        bytes_per_second = pcm_format.sample_rate * 4
+        silence_s = 0.0
+        async for chunk in audio_source_silence_keepalive(_inner(), pcm_format):
+            if chunk[0] == 0:
+                silence_s += len(chunk) / bytes_per_second
+            await asyncio.sleep(0.01)
+
+        assert idle_s - 0.1 <= silence_s <= idle_s + 0.02
+
+    @pytest.mark.asyncio
+    async def test_queued_audio_goes_out_before_catch_up_silence(self) -> None:
+        """Audio that arrived while the consumer was busy is relayed ahead of further silence."""
+        from music_assistant.helpers.audio import (  # noqa: PLC0415
+            audio_source_silence_keepalive,
+        )
+
+        async def _inner() -> AsyncGenerator[bytes]:
+            yield b"\x01"
+            await asyncio.sleep(0.5)
+            yield b"\x02"
+
+        out: list[bytes] = []
+        async for chunk in audio_source_silence_keepalive(_inner(), _audio_format()):
+            out.append(chunk)
+            if chunk[0] == 0:
+                await asyncio.sleep(1.0)
+
+        assert [chunk[0] for chunk in out] == [1, 0, 2]
 
     @pytest.mark.asyncio
     async def test_completes_when_inner_finishes(self) -> None:

@@ -97,8 +97,8 @@ stored record or when a device is new. It holds:
 - the ids of all protocols that belong to it, also those that are away;
 - its own config (name, controls, volume limits, announcements, icon, ...);
 - what it keeps for itself while it lives: the active output, the active MA source and when an
-  idle player forgets it, the sleep timer, the stop flag, the external-pause bookkeeping, a power
-  on or power off under way, the palette, `extra_data`;
+  idle player forgets it, the sleep timer, the stop flag, the fake pause, the external-pause
+  bookkeeping, a power on or power off under way, the palette, `extra_data`;
 - the resolution of its power, volume and mute control and of the output that renders.
 
 A player gives the final value of every field of its state under the name of that field:
@@ -563,7 +563,8 @@ protocol. The `volume_control` and `mute_control` of the player state name where
 goes right now, so while another output than the own protocol renders the audio they are the id of
 that protocol. A client only reads from them whether the player has a control (`none` if not).
 When the output changes, the protocol that becomes the control gets the level and mute of the
-player before it is made the active output and before the stream starts.
+player before it is made the active output and before the stream starts. So does the output a
+group member kept while its group played nothing, before the group starts again.
 
 While its own protocol is attached but can not be reached, a player keeps the level and mute it had
 when that began: what any of its protocols reports may be stale then. It is shown as the quieter of
@@ -644,17 +645,17 @@ controller does that.
 
 A command that starts a group player waits for the members that are switched off at their power
 control: a play, a resume, a play of an item or of media on its queue, a play or a power on of
-the group player, a selection of a source that plays, a next, a previous or a seek on a group
-player that does not play, a play on a member that goes to its group, and a queue transfer that
-plays on it. Before it takes any lock it powers those members on and waits until they have started
-up, all at once and each for its own start-up time (`_power_on_members`). Then it runs as it
+the group player, a selection of a source that plays, a next, a previous, a seek or a skip on a
+group player that does not play, a play on a member that goes to its group, and a queue transfer
+that plays on it. Before it takes any lock it powers those members on and waits until they have
+started up, all at once and each for its own start-up time (`_power_on_members`). Then it runs as it
 does for a group whose members are on, so the group starts once, on all of them. `cmd_set_members`
 does the same for the players it adds to a leader or a group. The user who sends the command
 needs access to the group player (or the leader), not to each member.
 
-A group player does not play, for a next, a previous or a seek, when its queue does not read as
-playing at the moment the command arrives (`PlayerQueue.state`). A next and a previous still
-return at once: the move to the other item, which they put off for a second, waits for the
+A group player does not play, for a next, a previous, a seek or a skip, when its queue does not
+read as playing at the moment the command arrives (`PlayerQueue.state`). A next and a previous
+still return at once: the move to the other item, which they put off for a second, waits for the
 members. Further presses meanwhile join that wait, so the group starts once, with the last item,
 and a wait that is called off ends that move without an error. A start that arrives before that
 move has played takes its place (`_drop_pending_step`): the move is dropped while its wait goes
@@ -687,10 +688,10 @@ the stop that frees a stream slot for another queue.
 
 Only such a command switches a member on; nothing does because a state changed. A play on a group
 player that plays already is ignored, as on any player, and switches nothing on. Neither does a
-next, a previous or a seek on a group player that plays, nor a selection of a queue as its source,
-which starts nothing. Every other command that starts the group waits for its members also while
-the group plays, and what it plays goes on meanwhile. What a command runs under the lock of the
-group leaves the members as they are, and so does playback that the server continues by itself
+next, a previous, a seek or a skip on a group player that plays, nor a selection of a queue as its
+source, which starts nothing. Every other command that starts the group waits for its members also
+while the group plays, and what it plays goes on meanwhile. What a command runs under the lock of
+the group leaves the members as they are, and so does playback that the server continues by itself
 (`without_member_power_on`): the next items of a queue that played out and a restart of what plays
 for a changed setting. An announcement to a group switches no member on either, also not when it
 resumes the group afterwards: it plays on the members that are on. An announcement to one
@@ -712,17 +713,30 @@ and still waits for another one, holds that off.
   Without such a protocol the controller plays the announcement as media and restores what the
   player did before. It does that too when the native route would ignore a requested volume, as
   long as it can set and restore that volume itself: the player has a volume control and a known
-  level. A group announcement goes to the
-  members when they can start it together. An announcement holds the player (and its group) for as
-  long as it plays.
+  level. An announcement to a player plays on that player alone, also when it is a member of a group
+  or leads others: played as media, it takes the player out of its group, or the members off the
+  leader, for the clip and puts them back afterwards. An announcement to a group player plays on all
+  its members: it goes to each member when they can start it together, else the group plays it as
+  media. An announcement holds the player (and its group) for as long as it plays.
 - **Audio sources** ([audio_sources.py](audio_sources.py)): a live source of a provider (an
   `AudioSource`, such as Spotify Connect) plays on a player independently of its queue. Any
   provider type can deliver them by mixing in `AudioSourceMixin`
   (`music_assistant/models/media_capabilities.py`). The controller keeps the session per player
   and passes the transport commands for it to the provider that owns it; the queue keeps its
-  items and goes inactive meanwhile. A source carries its own name and the player it belongs to;
-  `get_audio_source_name` composes the name for where it is shown: the name alone on that player,
-  with the player's name after it elsewhere.
+  items and goes inactive meanwhile. A source that pauses upstream ends its stream: its provider
+  has the player silenced (`PlayerProtocol.hold`) and shown as paused with `pause_audio_source`,
+  and plays on by selecting the source again. This fake pause (`Player.fake_paused`) is the
+  player's: it shows over an idle output and ends when the player plays again, is stopped, loses
+  the source, or after the pause timeout of the queues. The members of a group and the players
+  synced to a leader show the fake pause of their group or leader, and a sync group keeps its
+  members meanwhile. The session outlives it. The same fake pause shows the pause of the player's
+  own queue on a player that can not pause, or whose output would stop for it
+  (`PlayerProtocol.stops_on_pause`): the queue is stopped with its session, the output silenced
+  with `hold`, and play starts the queue again from where it was paused. A source carries
+  its own name and the player it belongs to; `get_audio_source_name` composes the name for where it
+  is shown: the name alone on that player, with the player's name after it elsewhere. An input a
+  speaker offers from another speaker of its system, such as the line-in of another Sonos speaker,
+  names that player in `owner_player_id` of its source list entry and is named by the same rule.
 - **An app from outside**: an app Music Assistant did not start can play on an audio protocol of the
   player, such as a stream cast from a phone to its Chromecast receiver. The player shows it unless
   an audio protocol is its active output, its own protocol plays (a paused player keeps its place
@@ -762,7 +776,9 @@ group's protocol runs first, and a failure later in the join aborts the takeover
   the leader hands its output over;
 - on a hand-over the protocol the leader rendered on before stops and lets its members go, the
   leader resumes when it played, and those members join it again;
-- the members of the leader's own protocol join last, and a dissolved leader stops.
+- the members of the leader's own protocol join last, those that leave it drop the audio
+  protocol they played on as their output, and a dissolved leader stops;
+- a leader that plays nothing drops the output it kept for a group it no longer has.
 
 A regroup at a fresh start takes the members off the protocol none of them needs anymore and runs
 the same join. The join reads the players again after each device call and takes its next decision
@@ -895,8 +911,8 @@ name. Taking the player out of its group (ungroup, power off, select source, pla
 
 ## What a Provider Has to Do
 
-The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Provider"), and
-`providers/_demo_player_provider` is the annotated example. In short:
+This is the contract for a player provider; `providers/_demo_player_provider` is the annotated
+example.
 
 1. Implement one `PlayerProtocol` per device and report its role (`_attr_role`) and its type
    (`PlayerType.PLAYER`, unless it is a group, a set of speakers or another kind of client the
@@ -917,15 +933,26 @@ The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Pr
    self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
    self._attr_device_info.add_identifier(IdentifierType.UUID, uuid)
    ```
+   Every zone of a multi-zone chassis reports its zone as `ZONE` next to the identifiers of the
+   chassis: `MAIN_ZONE` for the zone where the protocols of the chassis that report no zone
+   (AirPlay, DLNA) play, its own id for every other zone.
 3. `await mass.players.register(protocol)` when the device is found, `unregister(protocol_id)`
    when it is gone, `remove_protocol(protocol_id)` when the provider forgets it. The controller
    attaches a registered protocol once it knows its player, which can be after `register` returns:
    `on_attach` tells when.
-4. Claim per-device resources in `on_attach` and release them in `on_detach`; forget what the
-   provider keeps about a device in `on_remove`, or in `on_protocol_removed` for a device it may
-   hold no object for.
-5. `discover_players()` offers every known device that has no attached protocol, and is safe to
-   repeat: every discovery request of the controller (see [Lifecycle](#lifecycle)) runs it.
+4. Claim per-device resources in `on_attach` and release them in `on_detach`. `self.player` is
+   already `None` when `on_detach` runs, so a protocol releases what it holds itself. The same
+   object can be attached again later, when the controller moves it to another player or changes
+   its role: whatever `on_detach` ends, `on_attach` starts again. Forget what the provider keeps
+   about a device in `on_remove`, or in `on_protocol_removed` for a device it may hold no object
+   for. `on_remove` also reaches a protocol that is not attached, as long as its provider holds
+   the object: the controller keeps those only weakly, so a provider with a configured device list
+   keeps the object of every device on it.
+5. `discover_players()` offers the known devices without an attached protocol that the discovery
+   of the server can not find again, such as a device list in the config, and is safe to repeat.
+   Every discovery request of the controller (see [Lifecycle](#lifecycle)) replays the cached mDNS
+   records of the provider's `mdns_discovery` types, reruns the SSDP search of its
+   `upnp_discovery` targets and then runs it.
 6. Ask `mass.players.wants_protocol(protocol_id)` before setting up a connection for a device.
    Pass the protocol object too when a client can connect either as a device or as a player of its
    own: whether the stored config applies depends on that.
@@ -937,6 +964,23 @@ The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Pr
    that is incomplete. It names only protocol ids of the provider itself, and the provider
    registers no protocol for a speaker while its set names it. A protocol of another provider that
    still finds such a speaker gets a new player, which the user removes.
+8. Leave the power of other players to the controller (see [Power](#power)). Whether another
+   player takes part in what a protocol does (a member of its group, the target of a handover) is
+   the `available` that player published. A player that is off or starting up at a power control
+   that cuts its power is available while its device can not play (`offline_by_power_control`): a
+   command powers it on and waits for its start-up time before it reaches the protocol, and a
+   protocol never switches such a player on itself. Playback that a protocol restarts by itself,
+   which is no command of a user, runs inside `with mass.players.without_member_power_on():`. The
+   members that play along right now come from `mass.players.iter_group_members()`.
+9. A protocol that keeps a connection to its device overrides `on_power_cut` and
+   `on_power_restored`; one that connects for every stream needs neither. In `on_power_cut`:
+   close the connection, call off a reconnect that waits or runs, read unavailable and publish
+   that. `on_power_restored` starts from that same state, as it is also called when `on_power_cut`
+   was not (a play within the first seconds of a cut) and can be called twice: close what is left
+   of an earlier connection, connect anew and return once the device is reached or can not be.
+   The controller ends the call after `POWER_RESTORE_TIMEOUT`, so leave a retry behind for a
+   device that is not up yet. Either call can overlap a detach: after an `await`, check that the
+   protocol is still attached before going on. The Sonos and Chromecast protocols do this.
 
 **Important Notes:**
 - **Always validate MAC addresses** using `is_valid_mac_address()` before adding them
@@ -951,6 +995,13 @@ The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Pr
   protocol itself and from what is true of the player right now (`attached_protocols`,
   `resolve_output_protocol()`), never from a final value of its own player: during that update
   `self.player.<field>` is still the previous value
+- What a protocol reports about grouping names protocol ids of its own provider, and a group
+  protocol names its members by player id; the grouping as users see it is on the player
+  (`self.player.group_members`, `self.player.synced_to`, `self.player.active_group`)
+- Data that only lives while the server runs (`extra_data`, the stop and external source markers)
+  stays on `self.player`
+- The config of a protocol has no name: the name the user gave the device is
+  `self.player.config.name`
 
 ## Scenarios
 

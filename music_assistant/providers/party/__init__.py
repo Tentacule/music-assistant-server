@@ -32,7 +32,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.constants import CONF_ENABLED
-from music_assistant.controllers.player_queues.helpers import build_queue_item, committed_index
+from music_assistant.controllers.player_queues.helpers import build_queue_item
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_token,
     get_current_user,
@@ -674,7 +674,11 @@ class PartyPlugin(PluginProvider):
                     MediaType.RADIO,
                 ):
                     raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
-                queue_item = build_queue_item(queue_id, media_item)  # type: ignore[arg-type]
+                queue_item = build_queue_item(
+                    queue_id,
+                    media_item,  # type: ignore[arg-type]
+                    userid=self.mass.player_queues.queue_data(queue_id).userid,
+                )
                 queue_item.extra_attributes[ATTR_PARTY_GUEST] = True
                 if boost:
                     queue_item.extra_attributes[ATTR_PARTY_BOOSTED] = True
@@ -748,7 +752,7 @@ class PartyPlugin(PluginProvider):
 
             if queue.state == PlaybackState.PLAYING:
                 # Use the boundary to avoid moving already-buffered items
-                boundary_index = committed_index(queue)
+                boundary_index = self.mass.player_queues.committed_index(queue_id)
                 current_index = boundary_index if boundary_index is not None else 0
 
                 if item_index <= current_index:
@@ -825,7 +829,11 @@ class PartyPlugin(PluginProvider):
             raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
 
         # Create a QueueItem from the media item
-        queue_item = build_queue_item(queue_id, media_item)  # type: ignore[arg-type]
+        queue_item = build_queue_item(
+            queue_id,
+            media_item,  # type: ignore[arg-type]
+            userid=self.mass.player_queues.queue_data(queue_id).userid,
+        )
         queue_item.extra_attributes.update(extra_attributes)
 
         # Determine the attribute to scan for when finding the section boundary.
@@ -850,7 +858,7 @@ class PartyPlugin(PluginProvider):
             # Use index_in_buffer when playing to avoid inserting before an already-buffered
             # track, which would cause the newly added song to be skipped
             if queue and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-                boundary_index = committed_index(queue)
+                boundary_index = self.mass.player_queues.committed_index(queue_id)
                 current_index = boundary_index if boundary_index is not None else 0
             else:
                 current_index = queue.current_index or 0 if queue else 0

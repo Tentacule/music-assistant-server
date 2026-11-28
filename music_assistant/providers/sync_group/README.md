@@ -91,7 +91,7 @@ The sync leader is the **source of truth** for the group's playback state:
 - Reports playback state, elapsed time, current media, and active source to the group (via the group's `_update_attributes` reading what the leader's protocols report)
 - Contributes features (enqueue, gapless, volume, DSP) to the group
 
-> **State derivation note:** The leader's own playback state does **not** mirror its parent group — that would create a circular dependency (group derives from leader → leader derives from group → both stuck at last value). Members of an active group always report their own raw playback state; only manually-synced clients (`synced_to`) mirror their leader's state.
+> **State derivation note:** The leader's own playback state does **not** mirror its parent group — that would create a circular dependency (group derives from leader → leader derives from group → both stuck at last value). Members of an active group report their own raw playback state; only manually-synced clients (`synced_to`) mirror their leader's state. The one exception is the fake pause of the group (see Pausing): a silent leader and its members show as paused while the group's flag is set, and a change of that flag updates them explicitly, as the group's own state follows the leader.
 
 ## Group Types
 
@@ -100,6 +100,8 @@ The sync leader is the **source of truth** for the group's playback state:
 - **Fixed membership**: Members defined at creation, cannot be changed during playback
 - **Use case**: Permanent whole-home audio setup
 - **Behavior**: All static members rejoin automatically when playback starts
+- **All or nothing**: Taking a member out (playing on it, selecting a source on it, switching it off, ungrouping it) ends the session of the whole group. So does another sender that takes over the AirPlay receiver of a member
+- **A failure does not end it**: The other members play on without a member that dropped out of playback. It still belongs to the group, which adds it again once it is back, unless it plays something of its own by then
 
 ### Dynamic Groups
 
@@ -185,7 +187,8 @@ The group's lifecycle is driven by **power**:
 
 - `power(True)` **forms** the group: selects a sync leader and syncs all members to it
 - `power(False)` **dissolves** the group: ungroups all members from the leader and clears the sync leader
-- `stop()` only stops the leader — it does **not** dissolve the group; the group remains powered and ready to resume
+- `stop()` stops the leader and dissolves the group, unless Fake power control keeps the group powered
+- `hold()` silences the leader while what the group plays is paused, and keeps the group formed
 
 This mirrors how a typical AVR or stereo system behaves: turn it on, it's an active output; turn it off, it's gone.
 
@@ -219,12 +222,31 @@ This mirrors how a typical AVR or stereo system behaves: turn it on, it's an act
 3. Leader starts playback, synced members follow
 ```
 
+### Pausing a Live Source
+
+```
+1. A live source (such as Spotify Connect) pauses on the SyncGroupPlayer
+   │
+2. The player controller shows the group as paused (fake pause) and calls hold()
+   │
+3. hold() silences the leader's output; the group stays formed
+   │
+4. The leader and the members show the fake pause of the group
+   │
+5. play_media plays on with the same members; a stop or the pause timeout stops the group as any stop
+```
+
+The group's queue pauses the same way when its leader has no pause of its own, or one that would
+stop it: the group reports `stops_on_pause` from the protocol of its session.
+
 ### Stopping Playback
 
 ```
 1. User stops playback on SyncGroupPlayer
    │
-2. stop() forwarded to sync leader (group stays powered & formed)
+2. stop() forwarded to sync leader
+   │
+3. The group dissolves, unless Fake power control keeps it powered
 ```
 
 ### Powering Off
@@ -263,9 +285,31 @@ When `SET_MEMBERS` is called on a dynamic group:
 
 1. Remove from the internal member list (static members cannot be removed)
 2. If removing the **sync leader** while playing:
-   - If the active protocol supports dynamic leader switching (provider domain is in `PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH` — currently AirPlay, Snapcast, Sendspin), perform a **seamless handoff** at the protocol level: pick a new leader from the live session, then call `set_members(player_ids_to_remove=[old_session_protocol_id])` on the protocol that carries the session and `set_members(player_ids_to_add=[remaining_protocol_ids])` on the new leader's protocol of the same domain. Remaining members keep playing.
+   - If the protocol that carries the session can hand it over (`can_hand_over_session` on the protocol — currently AirPlay, Snapcast and Sendspin, and Sonos while the leader plays a track that is served to it as a file), perform a **seamless handoff** at the protocol level: pick a new leader from the live session, then call `set_members(player_ids_to_remove=[old_session_protocol_id])` on the protocol that carries the session and `set_members(player_ids_to_add=[remaining_protocol_ids])` on the new leader's protocol of the same domain. Remaining members keep playing.
+     A provider may hand its session to another member than the one picked: Sonos chooses the member that coordinates the group itself. Once the old leader stepped out, the group follows the member whose protocol of the session lists the picked member in its group, and the second call goes to that member. Until then the group keeps reporting what it played: the member that was picked does not report for the session, and it gets the output back that it had.
+     The protocol of the session becomes the active output of the new leader, as a play on it would have made it: a member that followed its leader on its own protocol has none, and a pause of the group would stop it instead.
+     Other members removed in the same command are released by the old leader first, as the handoff only takes the leader itself out of the session.
+     Members the old leader holds outside that session (e.g. a Sonos speaker that follows it natively) are released before its stream ends. Those that can be reached on the session's protocol join it once the new leader has taken over, the others leave the group.
    - If no remaining member is part of the live session (e.g. only freshly-added players are left), or the protocol doesn't support handoff: fall back to **dissolve + re-form** (brief audio gap)
 3. If removing a non-leader member: forward to `cmd_set_members` on the leader
+
+### Losing the Sync Leader
+
+A leader whose stream died is not removed from the group: its provider reports the loss through `on_session_leader_lost`, for static and dynamic groups alike.
+
+1. While the group plays and the protocol can hand the session over, the session is handed over with the same seamless handoff as above, to the members it still feeds once the lost leader is out of it
+2. The lost leader stays in the internal member list, so it is part of the group again once it re-joins and the next time the group forms. It is last in line to lead a dynamic group; a static group goes by its configured order
+3. Without a member that is still fed, the group is left to the caller, which ends the session
+
+A leader whose receiver another sender took over is ungrouped instead, as if the user took it out: a dynamic group plays on without it, a static group ends.
+
+### A Leader That Leaves by Itself
+
+A leader can leave the live session outside Music Assistant while the session plays on, held by one of its members: a Sonos speaker that is taken out of its group in the Sonos app. Its provider reports this through `on_session_moved` and names the member that holds the session. Sonos does so while the group plays a track that is served to the leader as a file, and only for a member of the group; a group in any other state is stopped.
+
+1. The group follows that member: it becomes the sync leader and takes over the members that remain. The leader that left is not asked to step out, and it reports for itself again only once the group follows the member
+2. A dynamic group drops the leader that left
+3. A static group keeps it as a member and plays on without it. It is added again as any configured member the leader is not holding, after the debounce
 
 ### Removing Last Member
 

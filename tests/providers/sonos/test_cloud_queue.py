@@ -4,19 +4,22 @@ import json
 import logging
 from collections import deque
 from collections.abc import Awaitable, Callable
+from types import MethodType
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiosonos.exceptions import FailedCommand
-from music_assistant_models.enums import MediaType, PlaybackState, RepeatMode
+from music_assistant_models.enums import CrossfadeMode, MediaType, PlaybackState, RepeatMode
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
+from music_assistant.constants import CONF_PLAYBACK_QUALITY
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.streams import StreamsController
 from music_assistant.models.player import Player
 from music_assistant.providers.sonos.cloud_queue import SonosCloudQueue, _requested_max
 from music_assistant.providers.sonos.const import PLAYBACK_STATE_MAP
@@ -53,9 +56,11 @@ class _FakeQueues:
         """Return the index of the item with the given id."""
         return next((i for i, x in enumerate(self.items) if x.queue_item_id == item_id), None)
 
-    def get_item(self, queue_id: str, index: int) -> QueueItem | None:
-        """Return the item at the given index."""
-        return self.items[index] if 0 <= index < len(self.items) else None
+    def get_item(self, queue_id: str, index_or_id: int | str) -> QueueItem | None:
+        """Return the item at the given index, or with the given id."""
+        if isinstance(index_or_id, str):
+            return next((x for x in self.items if x.queue_item_id == index_or_id), None)
+        return self.items[index_or_id] if 0 <= index_or_id < len(self.items) else None
 
     def get_next_item(self, queue_id: str, index_or_id: int | str) -> QueueItem | None:
         """Return the item that plays after the given index or item id."""
@@ -90,13 +95,25 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     mass.streams.resolve_stream_url = AsyncMock(
         side_effect=lambda _player_id, media, **_kwargs: media.uri
     )
+    # the streams controller's own decision on what a player gets as a file
+    mass.streams.mass = mass
+    mass.streams.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
+    mass.streams.audio.fade_into_pending.return_value = False
+    mass.streams.serves_as_file = MethodType(StreamsController.serves_as_file, mass.streams)
     player = SonosPlayer.__new__(SonosPlayer)
+    # a speaker as it comes: every setting at its default
+    player._config = MagicMock()
+    player._config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
     player.mass = mass
     player.logger = logging.getLogger("test.sonos.cloud_queue")
     player._protocol_id = "sonos_player"
     player._player = None
     player.connected = True
     player.cloud_queue_id = QUEUE_ID
+    player.group_queue_id = None
+    player._stepping_out = False
+    player._taken_over_item_id = None
+    player._loaded_session_id = "session"
     player.cloud_queue_version = 1.0
     player.cloud_queue_item_generation = 0
     player._window_item_ids = {}
@@ -104,17 +121,42 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     player._announcement_media = None
     player._woken_from_sleep = False
     player._flow_queue_id = None
+    player._flow_media = None
     player._queue_session_id = None
     player._evicted_cloud_queue = None
     return player, queues
 
 
+def _set_playback_quality(player: SonosPlayer, playback_quality: str) -> None:
+    """Set the playback quality the speaker gets its streams in."""
+    cast("MagicMock", player.config).get_value = MagicMock(
+        side_effect=lambda key, default=None: (
+            playback_quality if key == CONF_PLAYBACK_QUALITY else default
+        )
+    )
+
+
+def _make_media_queue_item(item_id: str, media_type: MediaType) -> QueueItem:
+    """Build a queue item that carries media of the given type."""
+    item = _make_queue_item(item_id)
+    item.media_item = MagicMock(media_type=media_type, uri=f"library://{media_type}/{item_id}")
+    return item
+
+
 def _loads_into_a_session(
-    group: MagicMock, on_load: Callable[..., Awaitable[None]] | None = None
+    group: MagicMock,
+    on_load: Callable[..., Awaitable[None]] | None = None,
+    on_setup: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Let a mocked group load a cloud queue into a session of its own, as the speaker does."""
 
-    async def _play_cloud_queue(*args: object, **kwargs: object) -> None:
+    async def _play_cloud_queue(
+        *args: object, on_session: Callable[[str], None] | None = None, **kwargs: object
+    ) -> None:
+        if on_setup is not None:
+            await on_setup()
+        if on_session is not None:
+            on_session("loaded-session")
         if on_load is not None:
             await on_load(*args, **kwargs)
         group.active_session_id = "loaded-session"
@@ -461,6 +503,70 @@ async def test_a_window_asked_around_an_id_of_an_earlier_load_keeps_the_ids_of_t
     assert lost.wire_ids == ["track0@1", "track1@1", "track2@1"]
 
 
+@pytest.mark.parametrize("replaced", [True, False], ids=["replaced queue", "same queue"])
+async def test_a_window_asked_ahead_of_a_load_addresses_the_loaded_session(replaced: bool) -> None:
+    """
+    Test the items of a window belong to the session the speaker loaded, until its next load.
+
+    A started queue is in a new session before the speaker loads it. An item fetched from that
+    session ahead of the load can wait for audio, and the speaker acts on no load while it does.
+
+    :param replaced: Whether the started queue replaced the one the speaker plays.
+    """
+    player = _make_player_on_real_queues(3, RepeatMode.OFF)
+    cast("AsyncMock", player.mass.streams.resolve_stream_url).side_effect = (
+        lambda _player_id, media, queue_index=None: f"{media.queue_session_id}/{queue_index}"
+    )
+    player.cloud_queue_item_generation = 3
+    queue_data = player.mass.player_queues._queue_data[QUEUE_ID]
+    queue_data.queue.current_index = 1
+    if replaced:
+        queue_data.items = [_make_queue_item(f"new{i}") for i in range(3)]
+    queue_data.session_id = "next-session"
+
+    window = await player.build_cloud_queue_window("track1@3")
+
+    assert window.wire_ids[1] == "track1@3"
+    assert [x.uri for x in window.items] == ["session/0", "session/1", "session/2"]
+
+
+async def test_a_load_addresses_the_session_it_loads() -> None:
+    """Test a window holds the items of the new session from the load on, not while it is set up."""
+    player = _make_player_on_real_queues(3, RepeatMode.OFF)
+    cast("AsyncMock", player.mass.streams.resolve_stream_url).side_effect = (
+        lambda _player_id, media, queue_index=None: f"{media.queue_session_id}/{queue_index}"
+    )
+    player.mass.player_queues._queue_data[QUEUE_ID].session_id = "next-session"
+    client = MagicMock()
+    client.player.is_passive = False
+    served: list[SonosQueueWindow] = []
+
+    async def _read_window_for_load(*_args: object, item_id: str, **_kwargs: object) -> None:
+        served.append(await player.build_cloud_queue_window(item_id))
+
+    async def _read_window_during_setup() -> None:
+        served.append(await player.build_cloud_queue_window("track0@0"))
+
+    _loads_into_a_session(client.player.group, _read_window_for_load, _read_window_during_setup)
+    player.client = client
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SonosPlayer, "flow_mode", property(lambda _self: False))
+        await player.play_media(
+            PlayerMedia(
+                uri="library://track/1",
+                media_type=MediaType.TRACK,
+                source_id=QUEUE_ID,
+                queue_item_id="track0",
+                queue_session_id="next-session",
+            )
+        )
+
+    during_setup, for_load = served
+    assert [x.uri for x in during_setup.items] == [f"session/{i}" for i in range(3)]
+    assert [x.uri for x in for_load.items] == [f"next-session/{i}" for i in range(3)]
+
+
 async def test_unavailable_items_are_left_out() -> None:
     """Test an item that cannot be played is not offered to the speaker."""
     items = [_make_queue_item(f"track{i}") for i in range(3)]
@@ -618,6 +724,66 @@ async def test_itemwindow_passes_the_speakers_request_through() -> None:
     assert body["queueVersion"] == "12.5"
     assert body["contextVersion"] == "3"
     assert body["includesBeginningOfQueue"] is True
+
+
+@pytest.mark.parametrize(
+    ("playback_quality", "policies"),
+    [
+        ("lossless_uncompressed", [{"canSeek": True}, None]),
+        ("compressed", [{"canSeek": True}, None]),
+        ("lossless_compressed", [None, None]),
+    ],
+)
+async def test_only_a_track_served_as_a_file_allows_a_seek(
+    playback_quality: str, policies: list[dict[str, bool] | None]
+) -> None:
+    """Test the speaker may seek in a track it gets as a file, and in nothing else it plays."""
+    items = [
+        _make_media_queue_item("track0", MediaType.TRACK),
+        _make_media_queue_item("radio0", MediaType.RADIO),
+    ]
+    player, _ = _make_player(items)
+    _set_playback_quality(player, playback_quality)
+    request = MagicMock()
+    request.query = {"itemId": "track0@0"}
+
+    response = await _make_cloud_queue()._handle_sonos_queue_itemwindow(player, request)
+
+    body = json.loads(response.text or "{}")
+    assert [item["id"] for item in body["items"]] == ["track0@0", "radio0@0"]
+    assert [item.get("policies") for item in body["items"]] == policies
+
+
+@pytest.mark.parametrize(
+    ("repeat_mode", "policies"),
+    [(RepeatMode.OFF, [{"canSeek": True}]), (RepeatMode.ONE, [None])],
+)
+async def test_a_track_in_a_queue_with_crossfade_allows_a_seek_unless_it_repeats(
+    repeat_mode: RepeatMode, policies: list[dict[str, bool] | None]
+) -> None:
+    """Test a track whose stream carries a mix is a file too, but not one that comes right back."""
+    player, queues = _make_player([_make_media_queue_item("track0", MediaType.TRACK)])
+    _set_playback_quality(player, "lossless_uncompressed")
+    queues.queue.repeat_mode = repeat_mode
+    streams = cast("MagicMock", player.mass.streams)
+    streams.get_crossfade_mode.return_value = CrossfadeMode.STANDARD_CROSSFADE
+    request = MagicMock()
+    request.query = {"itemId": "track0@0"}
+
+    response = await _make_cloud_queue()._handle_sonos_queue_itemwindow(player, request)
+
+    body = json.loads(response.text or "{}")
+    assert [item.get("policies") for item in body["items"]] == policies
+
+
+async def test_the_queue_itself_allows_no_seek() -> None:
+    """Test the queue keeps a seek off: only an item served as a file allows it for itself."""
+    player, _ = _make_player([_make_queue_item("track0")])
+
+    response = await _make_cloud_queue()._handle_sonos_queue_context(player, MagicMock())
+
+    body = json.loads(response.text or "{}")
+    assert body["playbackPolicies"]["canSeek"] is False
 
 
 async def test_itemwindow_reports_end_of_queue_when_it_cannot_be_described() -> None:
@@ -835,7 +1001,7 @@ async def test_a_successful_load_releases_the_replaced_sessions_streams() -> Non
 
 
 async def test_a_forced_flow_load_also_releases_the_replaced_sessions_streams() -> None:
-    """A flow-mode queue (overlay) streams via play_stream_url; the sweep still runs."""
+    """A compressed flow-mode queue streams via play_stream_url; the sweep still runs."""
     player, _ = _make_player([_make_queue_item("track0")])
     client = MagicMock()
     client.player.is_passive = False
@@ -848,7 +1014,7 @@ async def test_a_forced_flow_load_also_releases_the_replaced_sessions_streams() 
         patch.setattr(SonosPlayer, "flow_mode", property(lambda _self: True))
         await player.play_media(
             PlayerMedia(
-                uri="http://ma/flow/abc.flac",
+                uri="http://ma/flow/abc.mp3",
                 media_type=MediaType.TRACK,
                 source_id=QUEUE_ID,
                 queue_item_id="track0",
@@ -876,7 +1042,7 @@ async def test_a_failed_forced_flow_load_keeps_the_old_sessions_streams_alive() 
         with pytest.raises(FailedCommand):
             await player.play_media(
                 PlayerMedia(
-                    uri="http://ma/flow/abc.flac",
+                    uri="http://ma/flow/abc.mp3",
                     media_type=MediaType.TRACK,
                     source_id=QUEUE_ID,
                     queue_item_id="track0",
@@ -1092,18 +1258,27 @@ def test_queue_change_only_reaches_the_speakers_playing_it() -> None:
     provider.logger = logging.getLogger("test.sonos.cloud_queue")
     provider._pending_refresh_tasks = set()
     playing, other = MagicMock(spec=SonosPlayer), MagicMock(spec=SonosPlayer)
+    flowing = MagicMock(spec=SonosPlayer)
     playing.protocol_id = "playing"
     playing.cloud_queue_id = QUEUE_ID
+    playing.plays_flow_item = False
     other.protocol_id = "other"
     other.cloud_queue_id = "another_queue"
+    # its one item is the flow stream of the queue, which no edit of the queue changes
+    flowing.protocol_id = "flowing"
+    flowing.cloud_queue_id = QUEUE_ID
+    flowing.plays_flow_item = True
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(type(provider), "protocols", property(lambda _self: [playing, other]))
+        patch.setattr(
+            type(provider), "protocols", property(lambda _self: [playing, other, flowing])
+        )
         provider._handle_queue_items_updated(MagicMock(object_id=QUEUE_ID))
 
     # the version must be invalidated before the (debounced) command goes out, or a window
     # served in between carries a version the speaker reads as current
     playing.bump_cloud_queue_version.assert_called_once_with()
     other.bump_cloud_queue_version.assert_not_called()
+    flowing.bump_cloud_queue_version.assert_not_called()
     assert provider.mass.call_later.call_count == 1
     assert provider.mass.call_later.call_args.args[1] == playing.refresh_cloud_queue
     # the id must be per speaker, or one speaker's refresh cancels another's
@@ -1345,15 +1520,16 @@ async def test_an_item_added_after_the_speaker_read_its_window_is_not_received()
     assert player.has_received_next_item(queues.items[1])
 
 
-async def test_an_item_the_window_holds_at_another_position_is_not_received() -> None:
-    """The speaker holds its window by position, so an item that moved since is not held."""
+async def test_an_item_that_replaced_one_the_window_holds_is_received() -> None:
+    """The speaker holds its window by position, so a replaced item there is not fetched cold."""
     player, queues = _make_player([_make_queue_item(f"track{i}") for i in range(4)])
     await _read_window(player, "track0@0")
-    queues.items.insert(1, _make_queue_item("guest"))
+    queues.items[1:] = [_make_queue_item(f"new{i}") for i in range(1, 6)]
 
-    # the window named track1 where the guest is now, and track2 where track1 is now
-    assert not player.has_received_next_item(queues.items[1])
-    assert not player.has_received_next_item(queues.items[2])
+    assert player.has_received_next_item(queues.items[1])
+    assert player.has_received_next_item(queues.items[3])
+    # the new tracks are more than the ones they replace: the last position is not held
+    assert not player.has_received_next_item(queues.items[4])
 
 
 async def test_a_window_read_before_the_current_load_is_not_received() -> None:

@@ -122,6 +122,35 @@ async def test_playback_of_music_assistant_names_the_queue_of_the_player(
     assert player._attr_active_source == "pl_living"
 
 
+async def test_input_without_metadata_drops_the_previous_media(
+    network: MusicCastNetwork, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An input that reports no metadata shows none, not what the net source played before."""
+    player = network.player("A___main")
+    device = player.physical_device.device
+    device.data.zones["main"].input = "server"
+    device.data.netusb_track = "Queue Song"
+    device.data.netusb_artist = "Queue Artist"
+    device.data.netusb_album = "Queue Album"
+    device.data.netusb_play_time_updated = None
+    device.media_image_url = "http://ma:8097/image.jpg"
+    player.upnp_update_helper = UpnpUpdateHelper(
+        last_poll=time.time(), controlled_by_mass=False, current_uri=None
+    )
+    monkeypatch.setattr(player, "update_state", MagicMock())
+    await player.set_dynamic_attributes()
+
+    device.data.zones["main"].input = "audio1"
+    await player.set_dynamic_attributes()
+
+    assert player.current_media is not None
+    assert player.current_media.uri == "A___main_audio1"
+    assert player.current_media.title is None
+    assert player.current_media.artist is None
+    assert player.current_media.album is None
+    assert player.current_media.image_url is None
+
+
 async def test_end_of_track_advances_the_queue_of_the_player(network: MusicCastNetwork) -> None:
     """A receiver that went idle at the end of a track advances the queue of its player."""
     player = network.player("A___main")
@@ -170,6 +199,24 @@ async def test_end_of_track_advance_switches_no_member_of_a_group_on(
     await player._advance_queue_after_idle("item_1")
 
     assert seen == [True]
+
+
+@pytest.mark.parametrize("controlled_by_mass", [True, False], ids=["plays from MA", "plays itself"])
+def test_a_zone_that_plays_from_music_assistant_stops_on_a_pause(
+    network: MusicCastNetwork, controlled_by_mass: bool
+) -> None:
+    """
+    A zone that plays from Music Assistant stops on a pause, a zone that plays itself pauses.
+
+    :param controlled_by_mass: Whether Music Assistant plays on the zone.
+    """
+    player = network.player("A___main")
+    assert not player.stops_on_pause
+    player.upnp_update_helper = UpnpUpdateHelper(
+        last_poll=time.time(), controlled_by_mass=controlled_by_mass, current_uri=None
+    )
+
+    assert player.stops_on_pause is controlled_by_mass
 
 
 def test_a_musiccast_player_gets_the_gapless_burst(network: MusicCastNetwork) -> None:

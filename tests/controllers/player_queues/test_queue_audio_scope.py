@@ -23,12 +23,13 @@ from music_assistant_models.enums import (
     RepeatMode,
     SleepTimerMode,
 )
-from music_assistant_models.errors import AudioError
+from music_assistant_models.errors import AudioError, PlayerUnavailableError
 
 import music_assistant.controllers.streams.audio as audio_mod
 import music_assistant.controllers.streams.audio_buffer as buffer_mod
 from music_assistant.controllers.player_queues.state import SleepTimerTarget
 from tests.controllers.streams.stream_slot_rig import (
+    OTHER_QUEUE_ID,
     PCM_FORMAT,
     QUEUE_ID,
     SESSION_ID,
@@ -500,6 +501,7 @@ async def test_a_track_whose_source_still_fills_goes_when_the_player_reports_the
         name="Queue A",
         available=True,
         playback_state=PlaybackState.PLAYING,
+        fake_paused=False,
         corrected_elapsed_time=1.0,
         group_members=[],
     )
@@ -672,3 +674,25 @@ async def test_a_start_that_skips_failing_tracks_wants_the_audio_of_the_track_it
 
     assert tried == [("track 1", True), ("track 2", True), ("track 3", True)]
     assert rig.queues._queue_data[QUEUE_ID].queue.current_item is tracks[3]
+
+
+async def test_a_start_its_player_refuses_lets_go_of_the_audio_it_prepared(rig: SlotRig) -> None:
+    """A start the player refuses ends its session, so another queue gets the stream at once."""
+    tracks = rig.play("track 0", "track 1", "track 2")
+    allow_starts(rig)
+
+    async def _load(queue_item: QueueItem, **_kwargs: object) -> None:
+        await rig.audio.get_audio_buffer(queue_item, reason="prepare")
+
+    rig.queues._load_item = AsyncMock(side_effect=_load)  # type: ignore[method-assign]
+    rig.mass.players.play_media.side_effect = PlayerUnavailableError("no member can play")
+
+    with pytest.raises(PlayerUnavailableError):
+        await rig.queues.play_index(QUEUE_ID, 1)
+    await rig.settle()
+
+    queue_data = rig.queues._queue_data[QUEUE_ID]
+    assert queue_data.session_id is None
+    assert queue_data.items == tracks
+    other = rig.play("track 5", queue_id=OTHER_QUEUE_ID, session_id="session-b")
+    assert rig.fills(await rig.capture(other[0]))

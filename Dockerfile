@@ -15,8 +15,8 @@ ARG DEPS_IMAGE=tentacule/music-assistant:deps
 FROM --platform=$BUILDPLATFORM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION AS cliairplay-download
 
 # Bump the version and checksum-manifest hash together.
-ARG CLIAIRPLAY_VERSION=v0.5.16
-ARG CLIAIRPLAY_CHECKSUMS_SHA256=901df7ca60ebe4b51db2ec0a9ad999eb0e46293762b1a8326a1f7aa8f58803b5
+ARG CLIAIRPLAY_VERSION=v0.5.19
+ARG CLIAIRPLAY_CHECKSUMS_SHA256=020d12399021781c0c19bd5e857a28fa4bc8d61e47ef355e658cec04a985afe3
 ARG TARGETARCH
 
 # Download the cliairplay release asset for this image architecture.

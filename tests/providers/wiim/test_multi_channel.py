@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.enums import ChannelLayout, PlayerType
+from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.translations import TRANSLATION_RESOLVER
 from pywiim import WiiMError
 
+from music_assistant.controllers.translations import TranslationController
+from music_assistant.helpers.api import api_error_message
 from music_assistant.providers.wiim.constants import (
     BACKEND_GENERIC,
     BACKEND_OFFICIAL,
@@ -26,6 +31,7 @@ from music_assistant.providers.wiim.player import WiimPlayer
 from music_assistant.providers.wiim.provider import FOLLOWER_DECISION_DELAY, WiimProvider
 
 if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
     from tests.scenarios.harness import Scenario
 
 LEFT_UUID = "FF98F52BFDA052FF75BD4475"
@@ -37,6 +43,9 @@ RIGHT_IP = "192.0.2.12"
 THIRD_UUID = "FF31000121AD81B5D2CDC4D6"
 THIRD_ID = cast("str", linkplay_slave_uuid_to_player_id(THIRD_UUID))
 THIRD_IP = "192.0.2.13"
+FOURTH_UUID = "FF31000121AD81B5D2CDC4E7"
+FOURTH_ID = cast("str", linkplay_slave_uuid_to_player_id(FOURTH_UUID))
+FOURTH_IP = "192.0.2.14"
 INSTANCE_ID = "wiim--test"
 
 
@@ -142,6 +151,7 @@ def _provider(*players: Any, stored: dict[str, Any] | None = None) -> MagicMock:
     """
     provider = MagicMock()
     provider.instance_id = INSTANCE_ID
+    provider.translation_owner = "provider.wiim"
     provider.protocols = list(players)
     by_id = {player.protocol_id: player for player in players}
     provider.get_protocol = MagicMock(side_effect=by_id.get)
@@ -372,6 +382,147 @@ class TestNativeSet:
 
         assert not coordinator.is_native_set_member(RIGHT_ID)
         provider.mass.players.remove_absorbed_players.assert_not_called()
+
+
+class TestPairLeadsOnly:
+    """A pair can lead a group but is never a member of another speaker's group."""
+
+    @staticmethod
+    def _speakers(
+        left_slaves: list[dict[str, Any]], backend: str = BACKEND_OFFICIAL
+    ) -> tuple[NativeGroupCoordinator, MagicMock, MagicMock, MagicMock]:
+        """
+        Return a coordinator over the left and the third speaker, both read.
+
+        :param left_slaves: The slave list the left speaker reports, empty when it plays alone.
+        :param backend: The backend of both speakers.
+        """
+        left_client = _client("master" if left_slaves else "solo", left_slaves)
+        third_client = _client("solo", [])
+        for client in (left_client, third_client):
+            client.join_slave = AsyncMock()
+            client.get_device_info_model = AsyncMock(
+                return_value=MagicMock(needs_wifi_direct_multiroom=False, wmrm_version="4.3")
+            )
+        left = _native_player(LEFT_ID, left_client)
+        third = _native_player(THIRD_ID, third_client, THIRD_IP)
+        for player, name in ((left, "Pair"), (third, "Family Room")):
+            player.linkplay_backend = backend
+            player.display_name = name
+        provider = _provider(left, third)
+        provider.wiim_controller = MagicMock(
+            async_join_group=AsyncMock(), async_ungroup_device=AsyncMock()
+        )
+        return provider.native_groups, provider, left, third
+
+    @pytest.mark.parametrize("backend", [BACKEND_OFFICIAL, BACKEND_GENERIC])
+    async def test_adding_the_pair_to_another_speaker_is_refused_untouched(
+        self, backend: str
+    ) -> None:
+        """Adding the pair under another speaker fails before any speaker is commanded."""
+        coordinator, provider, left, third = self._speakers(_pair_alone(), backend)
+        controller = provider.wiim_controller
+
+        with pytest.raises(PlayerCommandFailed, match="can only lead a group, add Family Room"):
+            await coordinator.set_members(third, [LEFT_ID], None)
+
+        controller.async_join_group.assert_not_awaited()
+        controller.async_ungroup_device.assert_not_awaited()
+        left.make_command_client.return_value.join_slave.assert_not_awaited()
+        assert coordinator.channel_layout_of(LEFT_ID) == ChannelLayout.STEREO
+
+    @pytest.mark.parametrize("backend", [BACKEND_OFFICIAL, BACKEND_GENERIC])
+    async def test_the_refusal_carries_its_own_text(self, backend: str) -> None:
+        """The refusal names the WiiM text for it, with the pair and the other speaker."""
+        coordinator, _, _, third = self._speakers(_pair_alone(), backend)
+
+        with pytest.raises(PlayerCommandFailed) as refused:
+            await coordinator.set_members(third, [LEFT_ID], None)
+
+        assert refused.value.translation_key == "set_can_only_lead"
+        assert refused.value.translation_owner == "provider.wiim"
+        assert refused.value.translation_args == ["Pair", "Family Room"]
+
+    async def test_a_client_gets_the_reason_of_the_refusal(
+        self, mass_minimal: MusicAssistant
+    ) -> None:
+        """A client gets the whole sentence with both speakers, not the generic failure."""
+        coordinator, _, _, third = self._speakers(_pair_alone())
+        translations = TranslationController(mass_minimal)
+        await translations.setup(None)  # type: ignore[arg-type]
+
+        with pytest.raises(PlayerCommandFailed) as refused:
+            await coordinator.set_members(third, [LEFT_ID], None)
+        message = api_error_message("1", refused.value)
+        token = TRANSLATION_RESOLVER.set(partial(translations.get_translation, locale=None))
+        try:
+            details = message.to_dict()["details"]
+        finally:
+            TRANSLATION_RESOLVER.reset(token)
+
+        assert details == (
+            "Cannot add Pair to Family Room: a stereo pair or other speaker set can only lead "
+            "a group, add Family Room to Pair instead"
+        )
+        # the sentence is the provider's own string, which is what gets translated
+        assert details == translations.get_translation(
+            "errors.set_can_only_lead", owner="provider.wiim", params=["Pair", "Family Room"]
+        )
+
+    async def test_a_batch_with_the_pair_fails_as_a_whole(self) -> None:
+        """A valid addition in the same batch as the pair is not joined either."""
+        coordinator, provider, _, third = self._speakers(_pair_alone())
+        fourth = _native_player(FOURTH_ID, _client("solo", []), FOURTH_IP)
+        provider.protocols.append(fourth)
+        provider.get_protocol.side_effect = {
+            player.protocol_id: player for player in provider.protocols
+        }.get
+        controller = provider.wiim_controller
+
+        with pytest.raises(PlayerCommandFailed):
+            await coordinator.set_members(third, [FOURTH_ID, LEFT_ID], None)
+
+        controller.async_join_group.assert_not_awaited()
+        controller.async_ungroup_device.assert_not_awaited()
+
+    async def test_a_speaker_that_makes_no_pair_is_added_to_another_speaker(self) -> None:
+        """The same addition joins when the left speaker makes no pair."""
+        coordinator, provider, left, third = self._speakers([])
+        controller = provider.wiim_controller
+        third_client = third.make_command_client.return_value
+
+        async def _join(*_args: object) -> None:
+            _read(third_client, "master", [_slave(LEFT_UUID, LEFT_IP, 0, -1)])
+
+        controller.async_join_group.side_effect = _join
+
+        await coordinator.set_members(third, [LEFT_ID], None)
+
+        controller.async_join_group.assert_awaited_once_with(
+            third.native_device_udn, [left.native_device_udn]
+        )
+        assert coordinator.members_of(THIRD_ID) == [THIRD_ID, LEFT_ID]
+
+    async def test_the_pair_adds_and_removes_another_speaker_and_stays_a_pair(self) -> None:
+        """The pair leads the third speaker and lets it go again, and stays a pair."""
+        coordinator, provider, left, _ = self._speakers(_pair_alone())
+        controller = provider.wiim_controller
+        left_client = left.make_command_client.return_value
+        controller.async_join_group.side_effect = lambda *_args: _read(
+            left_client, "master", _pair_leads_group()
+        )
+        controller.async_ungroup_device.side_effect = lambda *_args: _read(
+            left_client, "master", _pair_alone()
+        )
+
+        await coordinator.set_members(left, [THIRD_ID], None)
+        assert coordinator.members_of(LEFT_ID) == [LEFT_ID, THIRD_ID]
+        assert coordinator.channel_layout_of(LEFT_ID) == ChannelLayout.STEREO
+
+        await coordinator.set_members(left, None, [THIRD_ID])
+        assert coordinator.members_of(LEFT_ID) == []
+        assert coordinator.channel_layout_of(LEFT_ID) == ChannelLayout.STEREO
+        assert coordinator.is_native_set_member(RIGHT_ID)
 
 
 class TestRestart:

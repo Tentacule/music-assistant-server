@@ -5,6 +5,7 @@ import os
 import pathlib
 import re
 from copy import deepcopy
+from enum import StrEnum
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from typing import Any, Final, cast
@@ -70,7 +71,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 # a new enum value or error code, a change in what an existing field holds, or a command that
 # only the bundled frontend uses: the frontend ships in lockstep with the server and never
 # gates on this.
-API_SCHEMA_VERSION: Final[int] = 125
+API_SCHEMA_VERSION: Final[int] = 128
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -162,6 +163,8 @@ DSP_IRS_DIRNAME: Final[str] = "dsp_irs"
 # impulse response ids are lowercased shortuuids, so plain lowercase alphanumerics;
 # validating against this keeps a caller-supplied id from escaping the storage dir
 DSP_IR_ID_RE: Final = re.compile(r"^[a-z0-9]+$")
+# subdirectory under the storage path holding user-uploaded custom media item images
+CUSTOM_IMAGES_DIRNAME: Final[str] = "custom_images"
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 # How a multi-channel player splits the bass between its subwoofer and its main speakers.
 CONF_CROSSOVER_FREQUENCY: Final[str] = "crossover_frequency"
@@ -205,7 +208,6 @@ CONF_DEFAULT_IMAGE_ENGINE: Final[str] = "image_engine"
 CONF_ICON: Final[str] = "icon"
 CONF_LANGUAGE: Final[str] = "language"
 CONF_SAMPLE_RATES: Final[str] = "sample_rates"
-CONF_REQUIRES_FIXED_CONTENT_LENGTH: Final[str] = "requires_fixed_content_length"
 CONF_BYPASS_NORMALIZATION_RADIO: Final[str] = "bypass_normalization_radio"
 CONF_ENABLE_ICY_METADATA: Final[str] = "enable_icy_metadata"
 CONF_VOLUME_NORMALIZATION_RADIO: Final[str] = "volume_normalization_radio"
@@ -252,7 +254,7 @@ CONF_PROTOCOL_EXPERIMENTAL_NOTE: Final[str] = "protocol_experimental_note"
 CONF_PROTOCOL_OFF_BY_DEFAULT: Final[str] = "protocol_off_by_default"
 CONF_CACHED_ARP_MAC: Final[str] = "cached_arp_mac"  # cached ARP-resolved MAC for fast restart
 CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provider (before ARP)
-CONF_OUTPUT_CODEC: Final[str] = "output_codec"
+CONF_PLAYBACK_QUALITY: Final[str] = "playback_quality"
 CONF_PREFER_WAV_FOR_LIVE_SOURCES: Final[str] = "prefer_wav_for_live_sources"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
 CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"  # legacy; consumed by one-time migration
@@ -609,36 +611,26 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
 )
 
 
-CONF_ENTRY_OUTPUT_CODEC = ConfigEntry(
-    key=CONF_OUTPUT_CODEC,
-    type=ConfigEntryType.STRING,
-    default_value="flac",
-    options=[
-        ConfigValueOption("flac"),
-        ConfigValueOption("mp3"),
-        ConfigValueOption("aac"),
-        ConfigValueOption("wav"),
-    ],
-    category="protocol_generic",
-    advanced=True,
-    requires_reload=True,
-)
+class PlaybackQuality(StrEnum):
+    """The quality level a player is streamed in, the value of the playback quality setting."""
 
-CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3 = ConfigEntry.from_dict(
-    {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "mp3"}
-)
-CONF_ENTRY_OUTPUT_CODEC_DEFAULT_AAC = ConfigEntry.from_dict(
-    {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "aac"}
-)
-CONF_ENTRY_OUTPUT_CODEC_ENFORCE_MP3 = ConfigEntry.from_dict(
-    {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "mp3", "hidden": True}
-)
-CONF_ENTRY_OUTPUT_CODEC_HIDDEN = ConfigEntry.from_dict(
-    {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "hidden": True}
-)
-CONF_ENTRY_OUTPUT_CODEC_ENFORCE_FLAC = ConfigEntry.from_dict(
-    {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "flac", "hidden": True}
-)
+    LOSSLESS_UNCOMPRESSED = "lossless_uncompressed"
+    LOSSLESS_COMPRESSED = "lossless_compressed"
+    COMPRESSED = "compressed"
+
+    @classmethod
+    def from_codec(cls, codec: ContentType) -> PlaybackQuality:
+        """
+        Return the quality level a codec belongs to.
+
+        :param codec: The codec to classify.
+        """
+        if codec == ContentType.WAV or codec.is_pcm():
+            return cls.LOSSLESS_UNCOMPRESSED
+        if codec.is_lossless():
+            return cls.LOSSLESS_COMPRESSED
+        return cls.COMPRESSED
+
 
 CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES = ConfigEntry(
     key=CONF_PREFER_WAV_FOR_LIVE_SOURCES,
@@ -651,16 +643,6 @@ CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES = ConfigEntry(
 CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED = ConfigEntry.from_dict(
     {**CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES.to_dict(), "default_value": True}
 )
-
-
-def create_output_codec_config_entry(
-    hidden: bool = False, default_value: str = "flac"
-) -> ConfigEntry:
-    """Create output codec config entry based on player specific helpers."""
-    conf_entry = ConfigEntry.from_dict(CONF_ENTRY_OUTPUT_CODEC.to_dict())
-    conf_entry.hidden = hidden
-    conf_entry.default_value = default_value
-    return conf_entry
 
 
 CONF_ENTRY_SYNC_ADJUST = ConfigEntry(
@@ -748,22 +730,6 @@ CONF_ENTRY_SAMPLE_RATES = ConfigEntry(
     category="protocol_generic",
     advanced=True,
     requires_reload=True,
-)
-
-
-CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH = ConfigEntry(
-    key=CONF_REQUIRES_FIXED_CONTENT_LENGTH,
-    type=ConfigEntryType.BOOLEAN,
-    default_value=False,
-    category="protocol_generic",
-    advanced=True,
-    requires_reload=True,
-)
-CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_DEFAULT_ENABLED = ConfigEntry.from_dict(
-    {**CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH.to_dict(), "default_value": True}
-)
-CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_ENFORCED = ConfigEntry.from_dict(
-    {**CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH.to_dict(), "default_value": True, "hidden": True}
 )
 
 
@@ -989,6 +955,7 @@ DEFAULT_STREAM_HEADERS = {
 
 # DLNA contentFeatures header values for different stream types.
 # ORG_OP=00: no time-seek, no byte-seek (we encode on-the-fly, unknown size).
+# ORG_OP=01: byte-seek, for a track that is served as a file.
 # ORG_FLAGS bit layout (hex, first 8 chars of 32-char field):
 #   bit 31 (0x80000000): Sender Paced - server controls data rate
 #   bit 24 (0x01000000): Streaming Transfer Mode
@@ -999,6 +966,7 @@ DEFAULT_STREAM_HEADERS = {
 # Bufferable streams (tracks, flow mode): player may buffer aggressively.
 # Flags: 0x01700000 = Streaming + Background + Connection Stalling + V1.5
 DLNA_CONTENT_FEATURES = "DLNA.ORG_OP=00;DLNA.ORG_FLAGS=01700000000000000000000000000000"
+DLNA_CONTENT_FEATURES_FILE = "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000"
 # Realtime streams (radio, plugin sources): server controls data rate,
 # player should not try to buffer ahead faster than the server delivers.
 # Flags: 0x81700000 = Sender Paced + Streaming + Background + Connection Stalling + V1.5
