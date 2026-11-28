@@ -84,6 +84,10 @@ from music_assistant.controllers.music.constants import (
     RANDOM_SORT_FIELDS,
     RESUME_POSITION_TOLERANCE_SECONDS,
 )
+from music_assistant.controllers.music.custom_migrations import (
+    DB_TABLE_MUSIC_VIDEO_ARTISTS,
+    DB_TABLE_MUSIC_VIDEO_TRACKS,
+)
 from music_assistant.controllers.music.helpers import (
     ResumePoint,
     mappings_within_sources,
@@ -171,6 +175,7 @@ JSON_KEYS = (
     "translation_params",
     "audiobook_artists",
     "access",
+    "video_track",  # fork: the library track linked to a music video
 )
 
 # The columns that make up a relation row, so a merge can copy it onto the target
@@ -181,6 +186,8 @@ RELATION_TABLE_COLUMNS = {
     DB_TABLE_ALBUM_TRACKS: ("track_id", "album_id", "disc_number", "track_number"),
     DB_TABLE_AUDIOBOOK_ARTISTS: ("audiobook_id", "artist_id"),
     DB_TABLE_TRACK_ARTISTS: ("track_id", "artist_id"),
+    DB_TABLE_MUSIC_VIDEO_ARTISTS: ("music_video_id", "artist_id"),
+    DB_TABLE_MUSIC_VIDEO_TRACKS: ("music_video_id", "track_id", "match_source"),
 }
 
 # When set (task-local), per-item MEDIA_ITEM_ADDED/UPDATED events and the on_item_updated
@@ -1528,6 +1535,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     return cast("ItemCls", await music_prov.get_track(item_id))
                 if self.media_type == MediaType.AUDIOBOOK:
                     return cast("ItemCls", await music_prov.get_audiobook(item_id))
+                if self.media_type == MediaType.MUSIC_VIDEO:
+                    return cast("ItemCls", await music_prov.get_music_video(item_id))
                 if self.media_type == MediaType.PODCAST:
                     return cast("ItemCls", await music_prov.get_podcast(item_id))
         # if we reach this point all possibilities failed and the item could not be found.
@@ -3426,6 +3435,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 # also set image on the album dict for ItemMapping compatibility
                 track_album["image"] = album_thumb
 
+        # fork: the library track linked to a music video
+        if video_track := db_row_dict.pop("video_track", None):
+            db_row_dict["track"] = video_track
+
         if audiobook_artists := db_row_dict.get("audiobook_artists"):
             _narrators = []
             _authors = []
@@ -4455,6 +4468,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 (DB_TABLE_ALBUM_ARTISTS, "artist_id"),
                 (DB_TABLE_AUDIOBOOK_ARTISTS, "artist_id"),
                 (DB_TABLE_TRACK_ARTISTS, "artist_id"),
+                (DB_TABLE_MUSIC_VIDEO_ARTISTS, "artist_id"),
             )
         if self.media_type == MediaType.AUDIOBOOK:
             return ((DB_TABLE_AUDIOBOOK_ARTISTS, "audiobook_id"),)
@@ -4462,6 +4476,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             return (
                 (DB_TABLE_ALBUM_TRACKS, "track_id"),
                 (DB_TABLE_TRACK_ARTISTS, "track_id"),
+                (DB_TABLE_MUSIC_VIDEO_TRACKS, "track_id"),
+            )
+        if self.media_type == MediaType.MUSIC_VIDEO:
+            return (
+                (DB_TABLE_MUSIC_VIDEO_ARTISTS, "music_video_id"),
+                (DB_TABLE_MUSIC_VIDEO_TRACKS, "music_video_id"),
             )
         return ()
 

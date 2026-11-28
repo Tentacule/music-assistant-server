@@ -39,6 +39,7 @@ from music_assistant_models.media_items import (
     MediaItemImage,
     MediaItemTranscriptCue,
     MediaItemType,
+    MusicVideo,
     Playlist,
     Podcast,
     PodcastEpisode,
@@ -127,6 +128,7 @@ LIBRARY_FEATURE_BY_MEDIA_TYPE: Final[dict[MediaType, ProviderFeature]] = {
     MediaType.RADIO: ProviderFeature.LIBRARY_RADIOS,
     MediaType.AUDIOBOOK: ProviderFeature.LIBRARY_AUDIOBOOKS,
     MediaType.PODCAST: ProviderFeature.LIBRARY_PODCASTS,
+    MediaType.MUSIC_VIDEO: ProviderFeature.LIBRARY_MUSIC_VIDEOS,  # fork
 }
 
 
@@ -655,6 +657,11 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         yield  # type: ignore[misc]
         raise NotImplementedError
 
+    async def get_library_music_videos(self) -> AsyncGenerator[MusicVideo]:
+        """Retrieve the music videos in the library of the provider (fork)."""
+        yield  # type: ignore[misc]
+        raise NotImplementedError
+
     async def get_library_genres(self) -> AsyncGenerator[str]:
         """Retrieve library genres from the provider."""
         yield  # type: ignore[misc]
@@ -703,6 +710,18 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
+        raise NotImplementedError
+
+    async def get_music_video(self, prov_music_video_id: str) -> MusicVideo:
+        """Get full music video details by id (fork)."""
+        raise NotImplementedError
+
+    async def get_artist_music_videos(self, prov_artist_id: str) -> list[MusicVideo]:
+        """
+        Get the music videos of the given artist (fork).
+
+        Only called if provider supports ProviderFeature.ARTIST_MUSIC_VIDEOS.
+        """
         raise NotImplementedError
 
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
@@ -1588,6 +1607,8 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             cur_db_ids = await self._sync_library_radios()
         elif media_type == MediaType.AUDIOBOOK:
             cur_db_ids = await self._sync_library_audiobooks()
+        elif media_type == MediaType.MUSIC_VIDEO:
+            cur_db_ids = await self._sync_library_music_videos()
         else:
             # this should not happen but catch it anyways
             raise UnsupportedFeaturedException(f"Unexpected media type to sync: {media_type}")
@@ -2244,6 +2265,45 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                 self._handle_sync_item_failure(MediaType.TRACK, prov_item.uri, err)
                 self._protect_failed_sync_item(
                     MediaType.TRACK, prov_item.item_id, db_id, cur_db_ids
+                )
+        return cur_db_ids
+
+    async def _sync_library_music_videos(self) -> set[int]:
+        """Sync the library music videos of the provider to the Music Assistant library (fork)."""
+        self.logger.debug("Start sync of Music Videos to Music Assistant library.")
+        cur_db_ids: set[int] = set()
+        item_count = 0
+        controller = self.mass.music.music_videos
+        async for prov_item in self.get_library_music_videos():
+            item_count += 1
+            self._update_sync_task_item_status(MediaType.MUSIC_VIDEO, item_count, prov_item.name)
+            self._note_listed_sync_item(MediaType.MUSIC_VIDEO, prov_item.item_id)
+            db_id: int | None = None
+            try:
+                library_item = await controller.get_library_item_by_prov_mappings(
+                    prov_item.provider_mappings,
+                )
+                db_id = int(library_item.item_id) if library_item else None
+                async with self.mass.music.database.deferred_commit():
+                    if not library_item:
+                        for prov_map in prov_item.provider_mappings:
+                            prov_map.in_library = True
+                        library_item = await controller.add_item_to_library(prov_item)
+                    elif self._library_item_needs_update(library_item, prov_item):
+                        library_item = await controller.update_item_in_library(
+                            library_item.item_id, prov_item
+                        )
+                    db_id = int(library_item.item_id)
+                    cur_db_ids.add(db_id)
+                    if prov_item.favorite is not None:
+                        await self.mass.music.favorites.record_from_provider(
+                            self.instance_id, MediaType.MUSIC_VIDEO, db_id, prov_item.favorite
+                        )
+                await asyncio.sleep(0)  # yield to eventloop
+            except Exception as err:  # noqa: BLE001 - one bad item must not stop the sync
+                self._handle_sync_item_failure(MediaType.MUSIC_VIDEO, prov_item.uri, err)
+                self._protect_failed_sync_item(
+                    MediaType.MUSIC_VIDEO, prov_item.item_id, db_id, cur_db_ids
                 )
         return cur_db_ids
 

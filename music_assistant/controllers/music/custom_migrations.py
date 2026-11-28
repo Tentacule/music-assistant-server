@@ -42,6 +42,9 @@ DB_TABLE_ALBUM_GROUP_DEFAULTS: Final[str] = "album_release_group_defaults"
 DB_TABLE_ALBUM_SERIES_HIDDEN: Final[str] = "album_series_hidden"
 DB_TABLE_ALBUM_SERIES_INFO: Final[str] = "album_series_info"
 DB_TABLE_ALBUM_SERIES_EXCLUSIONS: Final[str] = "album_series_exclusions"
+DB_TABLE_MUSIC_VIDEOS: Final[str] = "music_videos"
+DB_TABLE_MUSIC_VIDEO_ARTISTS: Final[str] = "music_video_artists"
+DB_TABLE_MUSIC_VIDEO_TRACKS: Final[str] = "music_video_tracks"
 
 
 async def _create_album_group_defaults(database: DatabaseConnection) -> None:
@@ -239,6 +242,90 @@ async def _clear_collected_metadata(
     )
 
 
+async def _create_music_videos(database: DatabaseConnection) -> None:
+    """
+    Create the tables of the music videos, their artists and their links to library tracks.
+
+    The music video table has the shape of the tracks table, with the same full-text search
+    index and triggers, which the upstream schema only creates for its own media tables.
+    A link to a track records how it was found; a manual link is never replaced by the
+    automatic matching, and an "excluded" link keeps a link the user removed from coming back.
+    """
+    await database.execute(
+        f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_MUSIC_VIDEOS}(
+                [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                [name] TEXT NOT NULL,
+                [sort_name] TEXT NOT NULL,
+                [version] TEXT,
+                [duration] INTEGER,
+                [metadata] json NOT NULL,
+                [play_count] INTEGER DEFAULT 0,
+                [last_played] INTEGER DEFAULT 0,
+                [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+                [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
+                [search_name] TEXT NOT NULL,
+                [search_sort_name] TEXT NOT NULL);"""
+    )
+    await database.execute(
+        f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_MUSIC_VIDEO_ARTISTS}(
+                [music_video_id] INTEGER NOT NULL,
+                [artist_id] INTEGER NOT NULL,
+                FOREIGN KEY([music_video_id]) REFERENCES [{DB_TABLE_MUSIC_VIDEOS}]([item_id]),
+                FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
+                UNIQUE(music_video_id, artist_id));"""
+    )
+    await database.execute(
+        f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_MUSIC_VIDEO_TRACKS}(
+                [music_video_id] INTEGER NOT NULL,
+                [track_id] INTEGER NOT NULL,
+                [match_source] TEXT NOT NULL,
+                FOREIGN KEY([music_video_id]) REFERENCES [{DB_TABLE_MUSIC_VIDEOS}]([item_id]),
+                FOREIGN KEY([track_id]) REFERENCES [tracks]([item_id]),
+                UNIQUE(music_video_id, track_id));"""
+    )
+    for table, column in (
+        (DB_TABLE_MUSIC_VIDEO_ARTISTS, "artist_id"),
+        (DB_TABLE_MUSIC_VIDEO_TRACKS, "track_id"),
+    ):
+        await database.execute(
+            f"CREATE INDEX IF NOT EXISTS {table}_{column}_idx ON {table}({column});"
+        )
+    table = DB_TABLE_MUSIC_VIDEOS
+    await database.execute(
+        f"""CREATE VIRTUAL TABLE IF NOT EXISTS {table}_fts USING fts5(
+                search_name, content='{table}', content_rowid='item_id', tokenize='trigram');"""
+    )
+    await database.execute(
+        f"""CREATE TRIGGER IF NOT EXISTS update_{table}_timestamp AFTER UPDATE ON {table}
+            BEGIN
+                UPDATE {table} SET timestamp_modified=cast(strftime('%s','now') as int)
+                WHERE rowid = new.rowid;
+            END;"""
+    )
+    await database.execute(
+        f"""CREATE TRIGGER IF NOT EXISTS {table}_fts_insert AFTER INSERT ON {table}
+            BEGIN
+                INSERT INTO {table}_fts(rowid, search_name) VALUES (new.item_id, new.search_name);
+            END;"""
+    )
+    await database.execute(
+        f"""CREATE TRIGGER IF NOT EXISTS {table}_fts_delete AFTER DELETE ON {table}
+            BEGIN
+                INSERT INTO {table}_fts({table}_fts, rowid, search_name)
+                VALUES ('delete', old.item_id, old.search_name);
+            END;"""
+    )
+    await database.execute(
+        f"""CREATE TRIGGER IF NOT EXISTS {table}_fts_update
+            AFTER UPDATE OF search_name ON {table}
+            BEGIN
+                INSERT INTO {table}_fts({table}_fts, rowid, search_name)
+                VALUES ('delete', old.item_id, old.search_name);
+                INSERT INTO {table}_fts(rowid, search_name) VALUES (new.item_id, new.search_name);
+            END;"""
+    )
+
+
 # append only: the position of a step is its version number
 _STEPS: Final[tuple[Callable[[DatabaseConnection], Awaitable[None]], ...]] = (
     _create_album_group_defaults,
@@ -247,6 +334,7 @@ _STEPS: Final[tuple[Callable[[DatabaseConnection], Awaitable[None]], ...]] = (
     _share_release_group_metadata,
     _repair_albums_built_from_another_album,
     _create_album_series_editing,
+    _create_music_videos,
 )
 
 

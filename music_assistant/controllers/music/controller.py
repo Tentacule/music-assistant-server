@@ -134,6 +134,7 @@ from music_assistant.controllers.music.media.base import (
     SUPPRESS_MEDIA_ITEM_UPDATES,
 )
 from music_assistant.controllers.music.media.genres import GenreController
+from music_assistant.controllers.music.media.music_videos import MusicVideosController
 from music_assistant.controllers.music.media.playlists import PlaylistController
 from music_assistant.controllers.music.media.podcasts import PodcastsController
 from music_assistant.controllers.music.media.radio import RadioController
@@ -424,6 +425,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self.audiobooks = AudiobooksController(self.mass)
         self.podcasts = PodcastsController(self.mass)
         self.genres = GenreController(self.mass)
+        self.music_videos = MusicVideosController(self.mass)
         self.recommendations = RecommendationsController(self.mass)
         self.recency = RecencyEngine(self.mass)
         self.favorites = FavoritesStore(self.mass)
@@ -2582,6 +2584,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         | AudiobooksController
         | PodcastsController
         | GenreController
+        | MusicVideosController
     ):
         """Return controller for MediaType."""
         if media_type == MediaType.ARTIST:
@@ -2602,6 +2605,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return self.podcasts
         if media_type == MediaType.GENRE:
             return self.genres
+        if media_type == MediaType.MUSIC_VIDEO:
+            return self.music_videos
         raise NotImplementedError(
             f"No media controller available for media type: {media_type.value}"
         )
@@ -2617,6 +2622,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         | AudiobooksController
         | PodcastsController
         | GenreController
+        | MusicVideosController
     ):
         """Return controller for MediaType."""
         media_type = get_collection_item_media_type_from_item_id(item_id)
@@ -2709,6 +2715,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         try:
             for ctrl in (
                 # order is important here to recursively cleanup bottom up
+                self.mass.music.music_videos,
                 self.mass.music.radio,
                 self.mass.music.playlists,
                 self.mass.music.tracks,
@@ -2792,6 +2799,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 self.audiobooks,
                 self.podcasts,
                 self.genres,
+                self.music_videos,
             ):
                 await ctrl.remove_all_provider_images(provider_instance)
         finally:
@@ -3051,6 +3059,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             self.radio,
             self.audiobooks,
             self.podcasts,
+            self.music_videos,
         ):
             async for db_item in ctrl.iter_library_items(
                 provider=list(multi_instance_providers), library_items_only=False
@@ -3090,6 +3099,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return provider.supports_feature(ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT)
         if media_type == MediaType.PODCAST:
             return provider.supports_feature(ProviderFeature.LIBRARY_PODCASTS_EDIT)
+        if media_type == MediaType.MUSIC_VIDEO:
+            return provider.supports_feature(ProviderFeature.LIBRARY_MUSIC_VIDEOS_EDIT)
         return False
 
     def library_favorites_edit_supported(self, provider: Provider, media_type: MediaType) -> bool:
@@ -3110,6 +3121,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return provider.supports_feature(ProviderFeature.FAVORITE_AUDIOBOOKS_EDIT)
         if media_type == MediaType.PODCAST:
             return provider.supports_feature(ProviderFeature.FAVORITE_PODCASTS_EDIT)
+        if media_type == MediaType.MUSIC_VIDEO:
+            return provider.supports_feature(ProviderFeature.FAVORITE_MUSIC_VIDEOS_EDIT)
         return False
 
     def library_sync_back_enabled(self, provider: Provider, media_type: MediaType) -> bool:

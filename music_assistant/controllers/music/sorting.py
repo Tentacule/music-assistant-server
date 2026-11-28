@@ -155,6 +155,7 @@ _LIBRARY_LISTING_SORT_OPTIONS: Final[dict[ListingType, tuple[SortOptionInfo, ...
     ListingType.LIBRARY_AUDIOBOOKS: _library_sort_options(SortField.DURATION),
     ListingType.LIBRARY_PODCASTS: _library_sort_options(),
     ListingType.LIBRARY_GENRES: _library_sort_options(),
+    ListingType.LIBRARY_MUSIC_VIDEOS: _library_sort_options(SortField.DURATION),
 }
 
 # the sort options each listing offers, the first one being the listing's default; the models
@@ -210,6 +211,9 @@ LISTING_SORT_OPTIONS: Final[dict[ListingType, tuple[SortOptionInfo, ...]]] = {
         SortField.ORIGINAL, SortField.NAME, SortField.DURATION
     ),
     ListingType.ARTIST_TOP_ALBUMS: _sort_options(SortField.ORIGINAL, SortField.NAME),
+    ListingType.ARTIST_MUSIC_VIDEOS: _sort_options(
+        SortField.SORT_NAME, SortField.NAME, SortField.DURATION
+    ),
     ListingType.SIMILAR_ARTISTS: _sort_options(SortField.ORIGINAL, SortField.NAME),
     ListingType.VERSIONS: _sort_options(SortField.ORIGINAL, SortField.NAME, SortField.PROVIDER),
     # the contents of a genre are library listings narrowed to the genre
@@ -238,6 +242,7 @@ LIBRARY_LISTINGS: Final[dict[MediaType, ListingType]] = {
     MediaType.AUDIOBOOK: ListingType.LIBRARY_AUDIOBOOKS,
     MediaType.PODCAST: ListingType.LIBRARY_PODCASTS,
     MediaType.GENRE: ListingType.LIBRARY_GENRES,
+    MediaType.MUSIC_VIDEO: ListingType.LIBRARY_MUSIC_VIDEOS,
 }
 
 # the sort fields the library listing of each media type offers, the listing default first

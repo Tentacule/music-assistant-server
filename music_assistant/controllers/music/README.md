@@ -36,3 +36,12 @@ Renumbering the stable backport to match dev's number does not fix it either: th
 ## Future Enhancements
 
 - Isolate the database connection itself into a dedicated layer (e.g. its own sub-controller), so connection ownership and the SQL/query surface live behind one boundary instead of on `MusicController`. Splitting the migrations (`migrations.py`) and grouping setup in `MusicDatabaseSetupMixin` are first steps toward that; the connection (`_database` and the `database` property) currently still lives on `MusicController`.
+
+## Fork: Music Videos
+
+`media/music_videos.py` holds `MusicVideosController` (`music/music_videos/*`). A music video plays like a track: the queue streams its audio to the player, and `helpers/music_videos.py` adds `-vn` to the ffmpeg input of its stream, so no ffmpeg run decodes the picture or writes it as cover art. The clients that can show video play the picture themselves, muted and in sync with the player position.
+
+- **Tables.** `music_videos` has the shape of `tracks`, with its own full-text index and triggers; `music_video_artists` holds its artists and `music_video_tracks` its links to library tracks. They are created by step 7 of `custom_migrations.py`, the fork's schema steps, and stay out of `MEDIA_ITEM_DB_TABLES` so the upstream schema code is unchanged.
+- **Track links.** A link records how it was found (`isrc`, `mb_recording`, `name`, `manual`). A manual link replaces the automatic ones and is never replaced by them; a link the user removed stays as `excluded`, so the automatic matching does not add it back. The library item carries its linked track as `track`, a manual link first.
+- **Same item.** Two music videos are one library item only with the same title, version and an artist in common: a music video is not matched across providers by name.
+- **Cleanup.** Removing a music video drops its links; the links to a deleted library artist or track are dropped on its `MEDIA_ITEM_DELETED` event, and a merge of artists or tracks carries them over (`_library_item_relations`).

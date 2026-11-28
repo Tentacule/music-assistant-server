@@ -19,6 +19,7 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     Genre,
     MediaItem,
+    MusicVideo,
     Playlist,
     Podcast,
     PodcastEpisode,
@@ -65,6 +66,8 @@ LISTING_ITEM_TYPES: dict[ListingType, type[MediaItem | BrowseFolder]] = {
     ListingType.GENRE_ALBUMS: Album,
     ListingType.ALBUM_SERIES: Album,
     ListingType.BROWSE: BrowseFolder,
+    ListingType.LIBRARY_MUSIC_VIDEOS: MusicVideo,  # fork
+    ListingType.ARTIST_MUSIC_VIDEOS: MusicVideo,  # fork
 }
 # the item attribute each in-memory sort field reads
 SORT_FIELD_ATTRIBUTES = {

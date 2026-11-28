@@ -193,6 +193,7 @@ from music_assistant.helpers.mp3 import (
     ffmpeg_http_headers,
     probe_mp3_seek_hints,
 )
+from music_assistant.helpers.music_videos import drop_video_streams
 from music_assistant.helpers.named_pipe import read_named_pipe
 from music_assistant.helpers.playlists import (
     HLS_CONTENT_TYPES,
@@ -1001,6 +1002,7 @@ class StreamsAudio:
                 prefer_album_loudness,
                 excluded_provider_instances,
             )
+            drop_video_streams(queue_item, streamdetails)
             queue_item.streamdetails = streamdetails
             return streamdetails
 
