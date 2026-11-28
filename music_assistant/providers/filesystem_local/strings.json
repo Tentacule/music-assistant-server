@@ -32,6 +32,10 @@
         "sound_effects": "[%key:common::config_entries::content_type::options::sound_effects%]"
       }
     },
+    "music_videos_folder": {
+      "label": "Music videos folder",
+      "description": "Folder, relative to the media folder, that holds the music videos. Each video can have a Kodi .nfo file (musicvideo) and a thumbnail (name-thumb.jpg) next to it; without an .nfo, the file is read as \"Artist - Title\". Its files are not imported as tracks. Leave empty to import no music videos."
+    },
     "library_sync_tracks": {
       "label": "Import tracks/files into the Music Assistant library",
       "description": "Define how/if you want to import tracks/files from the filesystem into the Music Assistant library. \nWhen not importing into the library, they can still be manually browsed using the Browse feature. \n\nPlease note that by adding a track into the Music Assistant library, the track artists and album will always be imported as well."

@@ -53,6 +53,7 @@ from music_assistant_models.media_items import (
     MediaItemCollection,
     MediaItemImage,
     MediaItemType,
+    MusicVideo,
     Playlist,
     Podcast,
     PodcastEpisode,
@@ -180,6 +181,7 @@ from .helpers import (
     recursive_iter,
     sorted_scandir,
 )
+from .music_videos import CONF_ENTRY_MUSIC_VIDEOS_FOLDER, FilesystemMusicVideos
 from .parsers import nfo_album_artist, parse_album_nfo
 
 if TYPE_CHECKING:
@@ -306,6 +308,11 @@ class LocalFileSystemProvider(MusicProvider):
         # tracks are processed
         self._changed_artist_paths: set[str] = set()
 
+    @cached_property
+    def _music_videos(self) -> FilesystemMusicVideos:
+        """Return the reader of the music videos folder (fork)."""
+        return FilesystemMusicVideos(self)
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         # content type and path are collected by the setup flow; surface the (immutable)
@@ -322,6 +329,7 @@ class LocalFileSystemProvider(MusicProvider):
             CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
             CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
             CONF_ENTRY_PROPAGATE_GENRES,
+            CONF_ENTRY_MUSIC_VIDEOS_FOLDER,
         )
 
     @property
@@ -346,6 +354,8 @@ class LocalFileSystemProvider(MusicProvider):
             ProviderFeature.LIBRARY_PLAYLISTS,
             *base_features,
         }
+        if self._music_videos.enabled:
+            music_features.add(ProviderFeature.LIBRARY_MUSIC_VIDEOS)
         if self.write_access:
             music_features.add(ProviderFeature.PLAYLIST_TRACKS_EDIT)
             music_features.add(ProviderFeature.PLAYLIST_TRACKS_MOVE)
@@ -544,6 +554,15 @@ class LocalFileSystemProvider(MusicProvider):
                         is_playable=True,
                     )
                 )
+            elif self._music_videos.is_music_video_file(item.relative_path):
+                items.append(
+                    ItemMapping(
+                        media_type=MediaType.MUSIC_VIDEO,
+                        item_id=item.relative_path,
+                        provider=self.instance_id,
+                        name=item.filename,
+                    )
+                )
             elif item.ext in TRACK_EXTENSIONS:
                 if item.absolute_path.rsplit(".", 1)[0] in cue_stems:
                     continue
@@ -589,6 +608,11 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def sync_library(self, media_type: MediaType) -> None:  # noqa: C901, PLR0912
         """Run library sync for this provider."""
+        if media_type == MediaType.MUSIC_VIDEO:
+            # fork: the music videos folder is listed apart from the scan of the audio files
+            if self._music_videos.enabled:
+                await super().sync_library(media_type)
+            return
         if media_type in (MediaType.ARTIST, MediaType.ALBUM):
             # artists and albums are synced as part of track sync
             return
@@ -992,6 +1016,15 @@ class LocalFileSystemProvider(MusicProvider):
         tags = await self._parse_tags(file_item)
         return await self._parse_track(file_item, tags=tags, full_album_metadata=True)
 
+    async def get_music_video(self, prov_music_video_id: str) -> MusicVideo:
+        """Get full music video details by id (fork)."""
+        return await self._music_videos.get(prov_music_video_id)
+
+    async def get_library_music_videos(self) -> AsyncGenerator[MusicVideo]:
+        """Retrieve the music videos of the music videos folder (fork)."""
+        async for music_video in self._music_videos.iter_library():
+            yield music_video
+
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get (full) podcast episode details by id."""
         if not await self.exists(prov_episode_id):
@@ -1335,6 +1368,8 @@ class LocalFileSystemProvider(MusicProvider):
                 return await self._get_stream_details_for_podcast_episode(item_id)
             if media_type == MediaType.SOUND_EFFECT:
                 return await self._get_stream_details_for_sound_effect(item_id)
+            if media_type == MediaType.MUSIC_VIDEO:
+                return await self._music_videos.get_stream_details(item_id)
             return await self._get_stream_details_for_track(item_id)
         except FileNotFoundError:
             self.logger.warning(
@@ -1593,6 +1628,9 @@ class LocalFileSystemProvider(MusicProvider):
             album directories.
         :param metadata_files: Receives local metadata files (NFO/images) found in the walk.
         """
+        if self._music_videos.owns(item.relative_path):
+            # fork: the music videos folder holds no tracks, its files are music videos
+            return
         if is_metadata_file(item):
             # a local metadata file is never imported media: it carries no provider mapping
             # and is never deleted, only checked (after the walk) for a change worth
