@@ -1004,7 +1004,7 @@ async def test_get_playlist_tracks(
     assert len(tracks) == 1
     assert tracks[0].item_id == "1"
     provider_mock.api.get.assert_called_with(
-        "playlists/1/tracks",
+        "playlists/1/items",
         params={"limit": 200, "offset": 0},
     )
 

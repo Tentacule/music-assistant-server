@@ -16,6 +16,7 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     MediaItemType,
+    MusicVideo,
     Playlist,
     RecommendationFolder,
     SearchResults,
@@ -40,6 +41,7 @@ from .constants import (
 )
 from .library import TidalLibraryManager
 from .media import TidalMediaManager
+from .music_videos import TidalMusicVideoManager
 from .play_reporting import TidalPlayReportingManager
 from .playlist import TidalPlaylistManager
 from .recommendations import TidalRecommendationManager
@@ -78,6 +80,10 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LYRICS,
     ProviderFeature.TRACK_BY_EXTERNAL_ID,
     ProviderFeature.ALBUM_BY_EXTERNAL_ID,
+    # fork: music videos
+    ProviderFeature.LIBRARY_MUSIC_VIDEOS,
+    ProviderFeature.LIBRARY_MUSIC_VIDEOS_EDIT,
+    ProviderFeature.ARTIST_MUSIC_VIDEOS,
 }
 
 
@@ -102,6 +108,7 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         self.recommendations_manager = TidalRecommendationManager(self)
         self.streaming = TidalStreamingManager(self)
         self.play_reporting = TidalPlayReportingManager(self)
+        self.music_videos = TidalMusicVideoManager(self)
 
     @property
     def stream_format_supersedes_catalog(self) -> bool:
@@ -180,7 +187,10 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
         """Perform search on musicprovider."""
-        return await self.media.search(search_query, media_types, limit)
+        results = await self.media.search(search_query, media_types, limit)
+        if MediaType.MUSIC_VIDEO in media_types:
+            results.music_videos = await self.music_videos.search(search_query, limit)
+        return results
 
     @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
@@ -246,8 +256,20 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         """Get a list of 10 most popular tracks for the given artist."""
         return await self.media.get_artist_toptracks(prov_artist_id)
 
+    @use_cache(3600 * 24 * 30)
+    async def get_music_video(self, prov_music_video_id: str) -> MusicVideo:
+        """Get music video details for given video id (fork)."""
+        return await self.music_videos.get(prov_music_video_id)
+
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
+    async def get_artist_music_videos(self, prov_artist_id: str) -> list[MusicVideo]:
+        """Get the music videos of the given artist (fork)."""
+        return await self.music_videos.artist_videos(prov_artist_id)
+
     @use_cache(3600 * 3, allow_expired_cache=True)
-    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, page: int = 0
+    ) -> list[Track | MusicVideo]:
         """Get playlist tracks."""
         return await self.media.get_playlist_tracks(prov_playlist_id, page)
 
@@ -255,6 +277,8 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         self, item_id: str, media_type: MediaType = MediaType.TRACK
     ) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
+        if media_type == MediaType.MUSIC_VIDEO:
+            return await self.music_videos.get_stream_details(item_id)
         return await self.streaming.get_stream_details(item_id)
 
     async def on_played(
@@ -309,12 +333,21 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         async for item in self.library.get_playlists():
             yield item
 
+    async def get_library_music_videos(self) -> AsyncGenerator[MusicVideo]:
+        """Retrieve the favorite music videos from Tidal (fork)."""
+        async for item in self.music_videos.library():
+            yield item
+
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
+        if item.media_type == MediaType.MUSIC_VIDEO:
+            return await self.music_videos.add_favorite(item.item_id)
         return await self.library.add_item(item)
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove item from library."""
+        if media_type == MediaType.MUSIC_VIDEO:
+            return await self.music_videos.remove_favorite(prov_item_id)
         return await self.library.remove_item(prov_item_id, media_type)
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:

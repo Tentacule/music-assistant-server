@@ -16,6 +16,7 @@ from music_assistant_models.media_items import (
     ItemMappingSummary,
     MusicVideo,
     MusicVideoSummary,
+    ProviderMapping,
 )
 
 from music_assistant.controllers.music.custom_migrations import (
@@ -298,6 +299,18 @@ class MusicVideosController(MediaControllerBase[MusicVideo]):
         await super().remove_item_from_library(db_id, recursive)
         for table in (DB_TABLE_MUSIC_VIDEO_ARTISTS, DB_TABLE_MUSIC_VIDEO_TRACKS):
             await self.mass.music.database.delete(table, {"music_video_id": db_id})
+
+    async def match_provider(
+        self, db_item: MusicVideo, provider: MusicProvider, strict: bool = True
+    ) -> list[ProviderMapping]:
+        """
+        Return the copies of a music video on another provider: none, see match_providers.
+
+        :param db_item: The music video to find.
+        :param provider: The provider to look on.
+        :param strict: Unused, a music video is never matched by name.
+        """
+        return []
 
     async def match_providers(self, db_item: MusicVideo) -> None:
         """

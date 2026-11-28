@@ -791,6 +791,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     library_results.radio,
                     library_results.audiobooks,
                     library_results.podcasts,
+                    library_results.music_videos,
                 )
                 for item in items
                 for prov_mapping in cast("MediaItemType", item).provider_mappings
@@ -896,6 +897,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 for item in sublist
                 if item is not None
             ][:limit],
+            music_videos=[
+                item
+                for sublist in zip_longest(*[x.music_videos for x in results_per_provider])
+                for item in sublist
+                if item is not None
+            ][:limit],
         )
 
         # the search results should already be sorted by relevance
@@ -911,6 +918,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             "audiobooks",
             "podcasts",
             "sound_effects",
+            "music_videos",
         ):
             setattr(result, field, sort_search_result(search_query, getattr(result, field)))
         # only cache the combined result if all providers contributed,
@@ -1020,6 +1028,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             MediaType.RADIO: "radio",
             MediaType.AUDIOBOOK: "audiobooks",
             MediaType.PODCAST: "podcasts",
+            MediaType.MUSIC_VIDEO: "music_videos",  # fork
         }
         result = SearchResults()
         # search all media types in parallel, each is an independent db query
@@ -3398,6 +3407,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             audiobooks=visible_items(self.mass, results.audiobooks, user),
             podcasts=visible_items(self.mass, results.podcasts, user),
             sound_effects=visible_items(self.mass, results.sound_effects, user),
+            music_videos=visible_items(self.mass, results.music_videos, user),
         )
 
     async def _get_newest_playlog_entries(

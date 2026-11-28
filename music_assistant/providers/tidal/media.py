@@ -23,6 +23,7 @@ from music_assistant.helpers.external_ids import (
 from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT
 
 from .constants import FAVORITE_TRACKS_PLAYLIST_ID, PAGES_MIX, PLAYLISTS, SKIPPABLE_ITEM_ERRORS
+from .music_videos import TIDAL_VIDEO_ITEM_TYPE, parse_music_video
 from .parsers import (
     parse_favorite_tracks_playlist,
     parse_playlist,
@@ -47,7 +48,7 @@ from .parsers_v2 import (
 from .quality_variants import Variant, album_variant_key, group_quality_variants, track_variant_key
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import Album, Artist, Playlist, Track
+    from music_assistant_models.media_items import Album, Artist, MusicVideo, Playlist, Track
 
     from .jsonapi import JsonApiDocument
     from .provider import TidalProvider
@@ -329,7 +330,9 @@ class TidalMediaManager:
         )
         return _parse_items(parse_artist_v2, self.provider, doc)[:limit]
 
-    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, page: int = 0
+    ) -> list[Track | MusicVideo]:
         """Get playlist tracks."""
         page_size = 200
         offset = page * page_size
@@ -341,8 +344,9 @@ class TidalMediaManager:
             return await self._get_mix_tracks(prov_playlist_id[4:], page_size, offset)
 
         try:
+            # fork: the items listing holds the music videos of the playlist as well
             data = await self.api.get(
-                f"{PLAYLISTS}/{prov_playlist_id}/tracks",
+                f"{PLAYLISTS}/{prov_playlist_id}/items",
                 params={"limit": page_size, "offset": offset},
             )
             return self._process_tracks(data.get("items", []), offset)
@@ -418,11 +422,17 @@ class TidalMediaManager:
             self.logger.debug("Failed to fetch lyrics for track %s: %s", prov_track_id, err)
             return None
 
-    def _process_tracks(self, items: list[dict[str, Any]], offset: int) -> list[Track]:
-        result = []
+    def _process_tracks(
+        self, items: list[dict[str, Any]], offset: int
+    ) -> list[Track | MusicVideo]:
+        result: list[Track | MusicVideo] = []
         for idx, item in enumerate(items, 1):
             try:
-                track = parse_track(self.provider, item)
+                track: Track | MusicVideo
+                if item.get("type") == TIDAL_VIDEO_ITEM_TYPE:
+                    track = parse_music_video(self.provider, item)
+                else:
+                    track = parse_track(self.provider, item)
                 track.position = offset + idx
                 result.append(track)
             except SKIPPABLE_ITEM_ERRORS as err:

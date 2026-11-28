@@ -1,0 +1,25 @@
+{
+    "created": "2024-06-10T12:00:00Z",
+    "item": {
+        "id": 55443322,
+        "title": "Test Video",
+        "volumeNumber": 1,
+        "trackNumber": 3,
+        "releaseDate": "2011-04-12T00:00:00.000+0000",
+        "imagePath": null,
+        "imageId": "aa11bb22-cc33-dd44-ee55-ff6677889900",
+        "duration": 245,
+        "quality": "MP4_1080P",
+        "streamReady": true,
+        "allowStreaming": true,
+        "explicit": false,
+        "popularity": 41,
+        "type": "Music Video",
+        "artist": {"id": 12345, "name": "Test Artist", "type": "MAIN", "picture": null},
+        "artists": [
+            {"id": 12345, "name": "Test Artist", "type": "MAIN", "picture": null},
+            {"id": 67890, "name": "Guest Artist", "type": "FEATURED", "picture": null}
+        ],
+        "album": {"id": 998877, "title": "Test Album", "cover": "1122-3344"}
+    }
+}
