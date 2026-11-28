@@ -29,6 +29,7 @@ from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
 
 from .base import MediaControllerBase
+from .music_video_playback import MusicVideoPlayback, MusicVideoPlaybackInfo
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -81,6 +82,10 @@ class MusicVideosController(MediaControllerBase[MusicVideo]):
             self.remove_track_link,
             required_scope=Scope.LIBRARY_WRITE,
         )
+        self.mass.register_api_command(
+            f"music/{api_base}/video_url", self.video_url, required_scope=Scope.LIBRARY_READ
+        )
+        self.playback = MusicVideoPlayback(mass)
         # links to a removed artist or track would point at nothing
         self.mass.subscribe(self._on_media_item_deleted, EventType.MEDIA_ITEM_DELETED)
 
@@ -196,6 +201,18 @@ class MusicVideosController(MediaControllerBase[MusicVideo]):
             },
             limit=0,
         )
+
+    async def video_url(
+        self, item_id: str, provider_instance_id_or_domain: str
+    ) -> MusicVideoPlaybackInfo:
+        """
+        Return where a client reads the video of a music video, to show it muted.
+
+        :param item_id: The music video id on the provider, or its library id.
+        :param provider_instance_id_or_domain: The provider the id belongs to, or "library".
+        """
+        music_video = await self.get(item_id, provider_instance_id_or_domain)
+        return await self.playback.video_url(music_video)
 
     async def set_track_link(self, item_id: str, track_id: str) -> MusicVideo:
         """
